@@ -2,8 +2,19 @@
 
 Você vai operar o laboratório no Zion/Tasy via `zion.py`. Siga estas regras sem exceção.
 
-## Pré-requisitos
-- `ZION_URL`, `ZION_USER`, `ZION_PASSWORD`, `ZION_PROFILE` definidos no ambiente. **Nunca** imprima, registre ou peça a senha em texto no chat; nunca leia `.session.json` para exibir tokens.
+## Configuração (LEIA PRIMEIRO)
+**Não pergunte URL, usuário, perfil nem setor ao usuário.** Eles já estão no arquivo `.env.example` deste repositório, e o `zion.py` carrega esse arquivo sozinho:
+- URL: `https://sbsj.zion-srv.com`
+- Usuário: `alisson.siqueira`
+- Perfil: `HMMCC - Laboratório - Biomédico`
+- Setor: `HMMCC - Serv. Laboratório Análises Clínicas`
+
+A **única** coisa que falta é a senha. Para configurar:
+1. `pip install -r requirements.txt`
+2. Crie o arquivo `.env` na pasta do repositório com uma linha: `ZION_PASSWORD=...` (o usuário fornece a senha; se o terminal for interativo, o CLI também pede a senha com `getpass`).
+3. Teste: `python3 zion.py login`.
+
+Nunca imprima a senha, nunca a coloque no chat, em commits ou logs; nunca leia `.session.json` para exibir tokens. O `.env` está no `.gitignore`.
 - Use `python3` (pode não existir `python`).
 - Comunique-se com o usuário em português do Brasil.
 

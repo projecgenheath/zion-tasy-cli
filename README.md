@@ -1,5 +1,8 @@
 # zion-tasy-cli
 
+> **Para IAs e usuários:** URL, usuário, perfil e setor já estão em `.env.example` e são carregados automaticamente. **Só falta a senha**: crie `.env` com `ZION_PASSWORD=...` e rode `python3 zion.py login`. Leia `AGENTS.md` antes de operar.
+
+
 CLI em Python para operar o módulo de Laboratório do **Zion / Philips Tasy 5.04** (web) sem navegador. Com ele você:
 
 - coloca atendimentos em **Digitação do Resultado**;

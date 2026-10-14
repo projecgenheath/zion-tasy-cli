@@ -16,6 +16,27 @@ Sessão: .session.json (chmod 600) ao lado deste arquivo; renova/reloga sozinho.
 import argparse, copy, json, os, sys, time, datetime as dt
 import requests
 
+def _load_env():
+    """Carrega .env.example (URL/usuário/perfil já preenchidos) e depois .env (senha). Variáveis já definidas têm prioridade."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    vals = {}
+    for name in (".env.example", ".env"):
+        fp = os.path.join(here, name)
+        if not os.path.exists(fp):
+            continue
+        for line in open(fp, encoding="utf-8"):
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            v = v.strip().strip('"').strip("'")
+            if v:
+                vals[k.strip()] = v
+    for k, v in vals.items():
+        os.environ.setdefault(k, v)
+
+_load_env()
+
 HOST = os.environ.get("ZION_URL", "").rstrip("/")
 API = HOST + "/TasyAppServer/resources"
 USER = os.environ.get("ZION_USER", "")
@@ -24,7 +45,7 @@ PERFIL_NOME = os.environ.get("ZION_PROFILE", "")
 SETOR_NOME = os.environ.get("ZION_SETOR", "")
 HERE = os.path.dirname(os.path.abspath(__file__))
 if not (HOST and USER and PERFIL_NOME) and __name__ == "__main__":
-    sys.exit("Defina ZION_URL, ZION_USER, ZION_PASSWORD e ZION_PROFILE (nome do perfil). Veja README.md.")
+    sys.exit("Configuração não encontrada: o arquivo .env.example deve estar na mesma pasta do zion.py.")
 SESSION_FILE = os.path.join(HERE, ".session.json")
 TPL = json.load(open(os.path.join(HERE, "templates.json"), encoding="utf-8"))
 TZ = dt.timezone(dt.timedelta(hours=-3))
@@ -91,8 +112,11 @@ class Zion:
 
     def login(self):
         pw = os.environ.get("ZION_PASSWORD")
+        if not pw and sys.stdin.isatty():
+            import getpass
+            pw = getpass.getpass(f"Senha do Zion para {USER}: ")
         if not pw:
-            sys.exit("ZION_PASSWORD não definida")
+            sys.exit("Falta só a senha: crie o arquivo .env com ZION_PASSWORD=sua_senha (ou exporte ZION_PASSWORD). URL, usuário e perfil já vêm do .env.example.")
         self.s.cookies.clear(); self.s.headers.pop("Authorization", None); self.s.headers.pop("crsfToken", None)
         self.sess = {}
         body = {"username": USER, "password": pw, "computerName": None, "osUsername": None, "scope": SCOPE,
