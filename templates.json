@@ -1,0 +1,859 @@
+{
+ "428461_childempty": {
+  "@class": "br.com.philips.tasy.dto.shared.wcpanel.WCPanelActivationOptions",
+  "legendsDef": {},
+  "functionVariables": {},
+  "activationType": "NamedAction",
+  "code": 428461,
+  "actionName": "CorLabF3.PrescrPendWJPGenericAction",
+  "parameters": {
+   "_schematicObjCode": 347028,
+   "PARENT_FILTER_PARAMS": {
+    "DT_INICIAL": {
+     "@class": "java.time.Instant",
+     "type": "INSTANT",
+     "value": "2026-10-09T03:00:00.000Z"
+    },
+    "DT_FINAL": {
+     "@class": "java.time.Instant",
+     "type": "INSTANT",
+     "value": "2026-10-14T02:59:59.000Z"
+    },
+    "IE_COLLECT_STAGES": 10,
+    "NR_SEQ_GRUPO_EXAME": null,
+    "NR_PRESCRICAO": null,
+    "CD_SETOR_ATENDIMENTO": null,
+    "NR_ATENDIMENTO": null,
+    "IE_TIPO_ATENDIMENTO": null,
+    "NR_CONTROLE": "",
+    "IE_CLINICA": null,
+    "NR_AMOSTRA": "",
+    "CD_SETOR_ATUAL": null,
+    "NR_SEQ_LAB_LOTE_EXAME": null,
+    "NR_CONTROLE_EXT": "",
+    "CD_PROCEDENCIA": null,
+    "LAB_LOT_EXTERNO": null,
+    "CD_PACIENTE": null,
+    "IE_RECOLETA": 2,
+    "IE_LOTE_EXTERNO": "N",
+    "IE_EXAME_LOTE": "N",
+    "IE_MOTIVO_RECOLETA": "N",
+    "IE_EXAMES_REPETICAO": "N",
+    "IE_SOMENTE_HOJE": "N",
+    "IE_BLOQUEADOS": "N",
+    "IE_URGENCIA": "N",
+    "IE_SOMENTE_PA": "N",
+    "IE_EXIBIR_PENDENTES": "N",
+    "IE_EXAME_ETAPA": "N",
+    "IE_AMOSTRA": "N",
+    "IE_ATRASO_15": "N",
+    "IE_ATRASO": "N",
+    "IE_RESTRINGE_RESULTADO": "N",
+    "IE_COLLECT": "N"
+   },
+   "_dimensionValues": {
+    "123227": [
+     "5"
+    ]
+   },
+   "PARAM_QUINZE": "",
+   "IE_STATUS_ATEND": 10,
+   "DT_INICIAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-13T13:10:10.000Z"
+   },
+   "DT_FINAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-14T13:10:10.000Z"
+   },
+   "DT_PREV_EXEC": ""
+  },
+  "pageBegin": 1,
+  "page": 1,
+  "recordsPerPage": 1000,
+  "sortAscending": true,
+  "featureCode": 722,
+  "tableDescription": "722_428461_dg",
+  "unificarCountRegistros": true,
+  "saveGridColumnOrder": true
+ },
+ "428260_master": {
+  "@class": "br.com.philips.tasy.dto.shared.wcpanel.WCPanelActivationOptions",
+  "legendsDef": {},
+  "functionVariables": {},
+  "activationType": "NamedAction",
+  "code": 428260,
+  "actionName": "CorLabF3.PrescricaoPendenteAction",
+  "parameters": {
+   "_schematicObjCode": 10015159,
+   "IE_STATUS_ATEND": 10,
+   "DT_INICIAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-09T03:00:00.000Z"
+   },
+   "DT_FINAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-14T02:59:59.000Z"
+   },
+   "IE_COLLECT_STAGES": 10,
+   "NR_SEQ_GRUPO_EXAME": null,
+   "NR_PRESCRICAO": null,
+   "CD_SETOR_ATENDIMENTO": null,
+   "NR_ATENDIMENTO": null,
+   "IE_TIPO_ATENDIMENTO": null,
+   "NR_CONTROLE": "",
+   "IE_CLINICA": null,
+   "NR_AMOSTRA": "",
+   "CD_SETOR_ATUAL": null,
+   "NR_SEQ_LAB_LOTE_EXAME": null,
+   "NR_CONTROLE_EXT": "",
+   "CD_PROCEDENCIA": null,
+   "LAB_LOT_EXTERNO": null,
+   "CD_PACIENTE": null,
+   "IE_RECOLETA": 2,
+   "IE_LOTE_EXTERNO": "N",
+   "IE_EXAME_LOTE": "N",
+   "IE_MOTIVO_RECOLETA": "N",
+   "IE_EXAMES_REPETICAO": "N",
+   "IE_SOMENTE_HOJE": "N",
+   "IE_BLOQUEADOS": "N",
+   "IE_URGENCIA": "N",
+   "IE_SOMENTE_PA": "N",
+   "IE_EXIBIR_PENDENTES": "N",
+   "IE_EXAME_ETAPA": "N",
+   "IE_AMOSTRA": "N",
+   "IE_ATRASO_15": "N",
+   "IE_ATRASO": "N",
+   "IE_RESTRINGE_RESULTADO": "N",
+   "IE_COLLECT": "N",
+   "_filterCode": 428306,
+   "_dimensionValues": {
+    "123227": [
+     "5"
+    ]
+   },
+   "_checkoutFilters": [
+    {
+     "isAll": false,
+     "code": 123227,
+     "label": "Estabelecimento",
+     "dimensionField": "CD",
+     "dimension": {
+      "code": 123227,
+      "label": "Estabelecimento",
+      "dimensionField": "CD"
+     },
+     "conditional": {
+      "code": 1186942,
+      "label": "Igual a"
+     },
+     "isNotEqualTo": false,
+     "totalSelected": "1",
+     "values": [
+      {
+       "itemCode": "5",
+       "itemTitle": "Hospital Mun da Mulher. e Maternidade Célia Câmara",
+       "dimensionCode": 123227,
+       "dimensionTitle": "Estabelecimento",
+       "visible": true,
+       "selected": true,
+       "mandatory": false
+      }
+     ]
+    }
+   ],
+   "PARAM_QUINZE": ""
+  },
+  "filterValues": {
+   "DT_INICIAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-09T03:00:00.000Z"
+   },
+   "DT_FINAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-14T02:59:59.000Z"
+   },
+   "IE_COLLECT_STAGES": 10,
+   "NR_SEQ_GRUPO_EXAME": null,
+   "NR_PRESCRICAO": null,
+   "CD_SETOR_ATENDIMENTO": null,
+   "NR_ATENDIMENTO": null,
+   "IE_TIPO_ATENDIMENTO": null,
+   "NR_CONTROLE": "",
+   "IE_CLINICA": null,
+   "NR_AMOSTRA": "",
+   "CD_SETOR_ATUAL": null,
+   "NR_SEQ_LAB_LOTE_EXAME": null,
+   "NR_CONTROLE_EXT": "",
+   "CD_PROCEDENCIA": null,
+   "LAB_LOT_EXTERNO": null,
+   "CD_PACIENTE": null,
+   "IE_RECOLETA": 2,
+   "IE_LOTE_EXTERNO": "N",
+   "IE_EXAME_LOTE": "N",
+   "IE_MOTIVO_RECOLETA": "N",
+   "IE_EXAMES_REPETICAO": "N",
+   "IE_SOMENTE_HOJE": "N",
+   "IE_BLOQUEADOS": "N",
+   "IE_URGENCIA": "N",
+   "IE_SOMENTE_PA": "N",
+   "IE_EXIBIR_PENDENTES": "N",
+   "IE_EXAME_ETAPA": "N",
+   "IE_AMOSTRA": "N",
+   "IE_ATRASO_15": "N",
+   "IE_ATRASO": "N",
+   "IE_RESTRINGE_RESULTADO": "N",
+   "IE_COLLECT": "N",
+   "_filterCode": 428306,
+   "_dimensionValues": {
+    "123227": [
+     "5"
+    ]
+   },
+   "_checkoutFilters": [
+    {
+     "isAll": false,
+     "code": 123227,
+     "label": "Estabelecimento",
+     "dimensionField": "CD",
+     "dimension": {
+      "code": 123227,
+      "label": "Estabelecimento",
+      "dimensionField": "CD"
+     },
+     "conditional": {
+      "code": 1186942,
+      "label": "Igual a"
+     },
+     "isNotEqualTo": false,
+     "totalSelected": "1",
+     "values": [
+      {
+       "itemCode": "5",
+       "itemTitle": "Hospital Mun da Mulher. e Maternidade Célia Câmara",
+       "dimensionCode": 123227,
+       "dimensionTitle": "Estabelecimento",
+       "visible": true,
+       "selected": true,
+       "mandatory": false
+      }
+     ]
+    }
+   ]
+  },
+  "pageBegin": 1,
+  "page": 1,
+  "recordsPerPage": 100,
+  "sortAscending": true,
+  "featureCode": 722,
+  "tableDescription": "722_428260_dg",
+  "unificarCountRegistros": true,
+  "saveGridColumnOrder": true
+ },
+ "428461_child": {
+  "@class": "br.com.philips.tasy.dto.shared.wcpanel.WCPanelActivationOptions",
+  "legendsDef": {},
+  "functionVariables": {},
+  "activationType": "NamedAction",
+  "code": 428461,
+  "actionName": "CorLabF3.PrescrPendWJPGenericAction",
+  "parameters": {
+   "_schematicObjCode": 347028,
+   "PARENT_FILTER_PARAMS": {
+    "DT_INICIAL": {
+     "@class": "java.time.Instant",
+     "type": "INSTANT",
+     "value": "2026-10-09T03:00:00.000Z"
+    },
+    "DT_FINAL": {
+     "@class": "java.time.Instant",
+     "type": "INSTANT",
+     "value": "2026-10-14T02:59:59.000Z"
+    },
+    "IE_COLLECT_STAGES": 10,
+    "NR_SEQ_GRUPO_EXAME": null,
+    "NR_PRESCRICAO": null,
+    "CD_SETOR_ATENDIMENTO": null,
+    "NR_ATENDIMENTO": null,
+    "IE_TIPO_ATENDIMENTO": null,
+    "NR_CONTROLE": "",
+    "IE_CLINICA": null,
+    "NR_AMOSTRA": "",
+    "CD_SETOR_ATUAL": null,
+    "NR_SEQ_LAB_LOTE_EXAME": null,
+    "NR_CONTROLE_EXT": "",
+    "CD_PROCEDENCIA": null,
+    "LAB_LOT_EXTERNO": null,
+    "CD_PACIENTE": null,
+    "IE_RECOLETA": 2,
+    "IE_LOTE_EXTERNO": "N",
+    "IE_EXAME_LOTE": "N",
+    "IE_MOTIVO_RECOLETA": "N",
+    "IE_EXAMES_REPETICAO": "N",
+    "IE_SOMENTE_HOJE": "N",
+    "IE_BLOQUEADOS": "N",
+    "IE_URGENCIA": "N",
+    "IE_SOMENTE_PA": "N",
+    "IE_EXIBIR_PENDENTES": "N",
+    "IE_EXAME_ETAPA": "N",
+    "IE_AMOSTRA": "N",
+    "IE_ATRASO_15": "N",
+    "IE_ATRASO": "N",
+    "IE_RESTRINGE_RESULTADO": "N",
+    "IE_COLLECT": "N"
+   },
+   "_dimensionValues": {
+    "123227": [
+     "5"
+    ]
+   },
+   "PARAM_QUINZE": "",
+   "IE_STATUS_ATEND": 10,
+   "PENDING_PRESCRIPTION_VALUES": null,
+   "DT_INICIAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-09T03:00:00.000Z"
+   },
+   "DT_FINAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-14T02:59:59.000Z"
+   },
+   "DT_PREV_EXEC": null
+  },
+  "pageBegin": 1,
+  "page": 1,
+  "recordsPerPage": 1000,
+  "sortAscending": true,
+  "featureCode": 722,
+  "tableDescription": "722_428461_dg",
+  "unificarCountRegistros": true,
+  "saveGridColumnOrder": true
+ },
+ "459320_childempty": {
+  "@class": "br.com.philips.tasy.dto.shared.wcpanel.WCPanelActivationOptions",
+  "legendsDef": {},
+  "functionVariables": {},
+  "activationType": "NamedAction",
+  "code": 459320,
+  "actionName": "CorLabF3.PrescrPendWJPGenericAction",
+  "parameters": {
+   "_schematicObjCode": 348692,
+   "PARENT_FILTER_PARAMS": {
+    "DT_INICIAL": {
+     "@class": "java.time.Instant",
+     "type": "INSTANT",
+     "value": "2026-10-09T03:00:00.000Z"
+    },
+    "DT_FINAL": {
+     "@class": "java.time.Instant",
+     "type": "INSTANT",
+     "value": "2026-10-14T02:59:59.000Z"
+    },
+    "IE_ANALYSIS_STAGES": 26,
+    "NR_SEQ_GRUPO_EXAME": null,
+    "CD_SETOR_ATENDIMENTO": null,
+    "NR_ATENDIMENTO": null,
+    "IE_TIPO_ATENDIMENTO": null,
+    "IE_CLINICA": null,
+    "CD_SETOR_ATUAL": null,
+    "CD_PROCEDENCIA": null,
+    "IE_RECOLETA": "2",
+    "IE_LOTE_EXTERNO": "N",
+    "IE_EXAME_LOTE": "N",
+    "IE_MOTIVO_RECOLETA": "N",
+    "IE_EXAMES_REPETICAO": "N",
+    "IE_SOMENTE_HOJE": "N",
+    "IE_BLOQUEADOS": "N",
+    "IE_URGENCIA": "N",
+    "IE_SOMENTE_PA": "N",
+    "IE_EXIBIR_PENDENTES": "N",
+    "IE_EXAME_ETAPA": "N",
+    "IE_AMOSTRA": "N",
+    "IE_ATRASO_15": "N",
+    "IE_ATRASO": "N",
+    "IE_RESTRINGE_RESULTADO": "N"
+   },
+   "_dimensionValues": {},
+   "PARAM_QUINZE": "",
+   "IE_STATUS_ATEND": 26,
+   "DT_INICIAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-09T03:00:00.000Z"
+   },
+   "DT_FINAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-14T02:59:59.000Z"
+   }
+  },
+  "pageBegin": 1,
+  "page": 1,
+  "recordsPerPage": 1000,
+  "sortAscending": true,
+  "featureCode": 722,
+  "tableDescription": "722_459320_dg",
+  "unificarCountRegistros": true,
+  "saveGridColumnOrder": true
+ },
+ "456352_master": {
+  "@class": "br.com.philips.tasy.dto.shared.wcpanel.WCPanelActivationOptions",
+  "legendsDef": {},
+  "functionVariables": {},
+  "activationType": "NamedAction",
+  "code": 456352,
+  "actionName": "CorLabF3.PrescricaoPendenteAction",
+  "parameters": {
+   "_schematicObjCode": 347035,
+   "DT_INICIAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-09T03:00:00.000Z"
+   },
+   "DT_FINAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-14T02:59:59.000Z"
+   },
+   "IE_ANALYSIS_STAGES": 26,
+   "NR_SEQ_GRUPO_EXAME": null,
+   "CD_SETOR_ATENDIMENTO": null,
+   "NR_ATENDIMENTO": null,
+   "IE_TIPO_ATENDIMENTO": null,
+   "IE_CLINICA": null,
+   "CD_SETOR_ATUAL": null,
+   "CD_PROCEDENCIA": null,
+   "IE_RECOLETA": "2",
+   "IE_LOTE_EXTERNO": "N",
+   "IE_EXAME_LOTE": "N",
+   "IE_MOTIVO_RECOLETA": "N",
+   "IE_EXAMES_REPETICAO": "N",
+   "IE_SOMENTE_HOJE": "N",
+   "IE_BLOQUEADOS": "N",
+   "IE_URGENCIA": "N",
+   "IE_SOMENTE_PA": "N",
+   "IE_EXIBIR_PENDENTES": "N",
+   "IE_EXAME_ETAPA": "N",
+   "IE_AMOSTRA": "N",
+   "IE_ATRASO_15": "N",
+   "IE_ATRASO": "N",
+   "IE_RESTRINGE_RESULTADO": "N",
+   "_filterCode": 458798,
+   "_dimensionValues": {},
+   "_checkoutFilters": [],
+   "PARAM_QUINZE": "",
+   "IE_STATUS_ATEND": 26
+  },
+  "filterValues": {
+   "DT_INICIAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-09T03:00:00.000Z"
+   },
+   "DT_FINAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-14T02:59:59.000Z"
+   },
+   "IE_ANALYSIS_STAGES": 26,
+   "NR_SEQ_GRUPO_EXAME": null,
+   "CD_SETOR_ATENDIMENTO": null,
+   "NR_ATENDIMENTO": null,
+   "IE_TIPO_ATENDIMENTO": null,
+   "IE_CLINICA": null,
+   "CD_SETOR_ATUAL": null,
+   "CD_PROCEDENCIA": null,
+   "IE_RECOLETA": "2",
+   "IE_LOTE_EXTERNO": "N",
+   "IE_EXAME_LOTE": "N",
+   "IE_MOTIVO_RECOLETA": "N",
+   "IE_EXAMES_REPETICAO": "N",
+   "IE_SOMENTE_HOJE": "N",
+   "IE_BLOQUEADOS": "N",
+   "IE_URGENCIA": "N",
+   "IE_SOMENTE_PA": "N",
+   "IE_EXIBIR_PENDENTES": "N",
+   "IE_EXAME_ETAPA": "N",
+   "IE_AMOSTRA": "N",
+   "IE_ATRASO_15": "N",
+   "IE_ATRASO": "N",
+   "IE_RESTRINGE_RESULTADO": "N",
+   "_filterCode": 458798,
+   "_dimensionValues": {},
+   "_checkoutFilters": []
+  },
+  "pageBegin": 1,
+  "page": 1,
+  "recordsPerPage": 100,
+  "sortAscending": true,
+  "featureCode": 722,
+  "tableDescription": "722_456352_dg",
+  "unificarCountRegistros": true,
+  "saveGridColumnOrder": true
+ },
+ "459320_child": {
+  "@class": "br.com.philips.tasy.dto.shared.wcpanel.WCPanelActivationOptions",
+  "legendsDef": {},
+  "functionVariables": {},
+  "activationType": "NamedAction",
+  "code": 459320,
+  "actionName": "CorLabF3.PrescrPendWJPGenericAction",
+  "parameters": {
+   "_schematicObjCode": 348692,
+   "PARENT_FILTER_PARAMS": {
+    "DT_INICIAL": {
+     "@class": "java.time.Instant",
+     "type": "INSTANT",
+     "value": "2026-10-09T03:00:00.000Z"
+    },
+    "DT_FINAL": {
+     "@class": "java.time.Instant",
+     "type": "INSTANT",
+     "value": "2026-10-14T02:59:59.000Z"
+    },
+    "IE_ANALYSIS_STAGES": 26,
+    "NR_SEQ_GRUPO_EXAME": null,
+    "CD_SETOR_ATENDIMENTO": null,
+    "NR_ATENDIMENTO": null,
+    "IE_TIPO_ATENDIMENTO": null,
+    "IE_CLINICA": null,
+    "CD_SETOR_ATUAL": null,
+    "CD_PROCEDENCIA": null,
+    "IE_RECOLETA": "2",
+    "IE_LOTE_EXTERNO": "N",
+    "IE_EXAME_LOTE": "N",
+    "IE_MOTIVO_RECOLETA": "N",
+    "IE_EXAMES_REPETICAO": "N",
+    "IE_SOMENTE_HOJE": "N",
+    "IE_BLOQUEADOS": "N",
+    "IE_URGENCIA": "N",
+    "IE_SOMENTE_PA": "N",
+    "IE_EXIBIR_PENDENTES": "N",
+    "IE_EXAME_ETAPA": "N",
+    "IE_AMOSTRA": "N",
+    "IE_ATRASO_15": "N",
+    "IE_ATRASO": "N",
+    "IE_RESTRINGE_RESULTADO": "N"
+   },
+   "_dimensionValues": {},
+   "PARAM_QUINZE": "",
+   "IE_STATUS_ATEND": 26,
+   "PENDING_PRESCRIPTION_VALUES": null,
+   "DT_INICIAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-09T03:00:00.000Z"
+   },
+   "DT_FINAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-14T02:59:59.000Z"
+   }
+  },
+  "pageBegin": 1,
+  "page": 1,
+  "recordsPerPage": 1000,
+  "sortAscending": true,
+  "featureCode": 722,
+  "tableDescription": "722_459320_dg",
+  "unificarCountRegistros": true,
+  "saveGridColumnOrder": true
+ },
+ "691864_childempty": {
+  "@class": "br.com.philips.tasy.dto.shared.wcpanel.WCPanelActivationOptions",
+  "legendsDef": {},
+  "functionVariables": {},
+  "activationType": "NamedAction",
+  "code": 691864,
+  "actionName": "CorLabF3.PrescrPendWJPGenericAction",
+  "parameters": {
+   "_schematicObjCode": 688563,
+   "PARENT_FILTER_PARAMS": {
+    "DT_INICIAL": {
+     "@class": "java.time.Instant",
+     "type": "INSTANT",
+     "value": "2026-10-09T03:00:00.000Z"
+    },
+    "DT_FINAL": {
+     "@class": "java.time.Instant",
+     "type": "INSTANT",
+     "value": "2026-10-14T02:59:59.000Z"
+    },
+    "IE_RESULT_STAGES": 30,
+    "NR_SEQ_GRUPO_EXAME": null,
+    "CD_SETOR_ATENDIMENTO": null,
+    "NR_ATENDIMENTO": null,
+    "IE_TIPO_ATENDIMENTO": null,
+    "IE_CLINICA": null,
+    "CD_SETOR_ATUAL": "0",
+    "CD_PROCEDENCIA": null,
+    "IE_COMUNICACAO_CRITICO": null,
+    "IE_RECOLETA": "2",
+    "IE_LOTE_EXTERNO": "N",
+    "IE_EXAME_LOTE": "N",
+    "IE_MOTIVO_RECOLETA": "N",
+    "IE_EXAMES_REPETICAO": "N",
+    "IE_SOMENTE_HOJE": "N",
+    "IE_BLOQUEADOS": "N",
+    "IE_URGENCIA": "N",
+    "IE_SOMENTE_PA": "N",
+    "IE_EXIBIR_PENDENTES": "N",
+    "IE_EXAME_ETAPA": "N",
+    "IE_AMOSTRA": "N",
+    "IE_ATRASO_15": "N",
+    "IE_ATRASO": "N",
+    "IE_RESTRINGE_RESULTADO": "N",
+    "IE_CONSIDERAR_EXAMES_BAIXADOS": "N",
+    "IE_COLLECT": "N"
+   },
+   "PARAM_QUINZE": "",
+   "IE_STATUS_ATEND": 30,
+   "_dimensionValues": {},
+   "DT_INICIAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-09T03:00:00.000Z"
+   },
+   "DT_FINAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-14T02:59:59.000Z"
+   }
+  },
+  "pageBegin": 1,
+  "page": 1,
+  "recordsPerPage": 1000,
+  "sortAscending": true,
+  "featureCode": 722,
+  "tableDescription": "722_691864_dg",
+  "unificarCountRegistros": true,
+  "saveGridColumnOrder": true
+ },
+ "498026_master": {
+  "@class": "br.com.philips.tasy.dto.shared.wcpanel.WCPanelActivationOptions",
+  "legendsDef": {},
+  "functionVariables": {},
+  "activationType": "NamedAction",
+  "code": 498026,
+  "actionName": "CorLabF3.PrescricaoPendenteAction",
+  "parameters": {
+   "_schematicObjCode": 395469,
+   "DT_INICIAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-09T03:00:00.000Z"
+   },
+   "DT_FINAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-14T02:59:59.000Z"
+   },
+   "IE_RESULT_STAGES": 30,
+   "NR_SEQ_GRUPO_EXAME": null,
+   "CD_SETOR_ATENDIMENTO": null,
+   "NR_ATENDIMENTO": null,
+   "IE_TIPO_ATENDIMENTO": null,
+   "IE_CLINICA": null,
+   "CD_SETOR_ATUAL": "0",
+   "CD_PROCEDENCIA": null,
+   "IE_COMUNICACAO_CRITICO": null,
+   "IE_RECOLETA": "2",
+   "IE_LOTE_EXTERNO": "N",
+   "IE_EXAME_LOTE": "N",
+   "IE_MOTIVO_RECOLETA": "N",
+   "IE_EXAMES_REPETICAO": "N",
+   "IE_SOMENTE_HOJE": "N",
+   "IE_BLOQUEADOS": "N",
+   "IE_URGENCIA": "N",
+   "IE_SOMENTE_PA": "N",
+   "IE_EXIBIR_PENDENTES": "N",
+   "IE_EXAME_ETAPA": "N",
+   "IE_AMOSTRA": "N",
+   "IE_ATRASO_15": "N",
+   "IE_ATRASO": "N",
+   "IE_RESTRINGE_RESULTADO": "N",
+   "IE_CONSIDERAR_EXAMES_BAIXADOS": "N",
+   "IE_COLLECT": "N",
+   "_filterCode": 498079,
+   "_dimensionValues": {},
+   "_checkoutFilters": [],
+   "PARAM_QUINZE": "",
+   "IE_STATUS_ATEND": 30
+  },
+  "filterValues": {
+   "DT_INICIAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-09T03:00:00.000Z"
+   },
+   "DT_FINAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-14T02:59:59.000Z"
+   },
+   "IE_RESULT_STAGES": 30,
+   "NR_SEQ_GRUPO_EXAME": null,
+   "CD_SETOR_ATENDIMENTO": null,
+   "NR_ATENDIMENTO": null,
+   "IE_TIPO_ATENDIMENTO": null,
+   "IE_CLINICA": null,
+   "CD_SETOR_ATUAL": "0",
+   "CD_PROCEDENCIA": null,
+   "IE_COMUNICACAO_CRITICO": null,
+   "IE_RECOLETA": "2",
+   "IE_LOTE_EXTERNO": "N",
+   "IE_EXAME_LOTE": "N",
+   "IE_MOTIVO_RECOLETA": "N",
+   "IE_EXAMES_REPETICAO": "N",
+   "IE_SOMENTE_HOJE": "N",
+   "IE_BLOQUEADOS": "N",
+   "IE_URGENCIA": "N",
+   "IE_SOMENTE_PA": "N",
+   "IE_EXIBIR_PENDENTES": "N",
+   "IE_EXAME_ETAPA": "N",
+   "IE_AMOSTRA": "N",
+   "IE_ATRASO_15": "N",
+   "IE_ATRASO": "N",
+   "IE_RESTRINGE_RESULTADO": "N",
+   "IE_CONSIDERAR_EXAMES_BAIXADOS": "N",
+   "IE_COLLECT": "N",
+   "_filterCode": 498079,
+   "_dimensionValues": {},
+   "_checkoutFilters": []
+  },
+  "pageBegin": 1,
+  "page": 1,
+  "recordsPerPage": 100,
+  "sortAscending": true,
+  "featureCode": 722,
+  "tableDescription": "722_498026_dg",
+  "unificarCountRegistros": true,
+  "saveGridColumnOrder": true
+ },
+ "691864_child": {
+  "@class": "br.com.philips.tasy.dto.shared.wcpanel.WCPanelActivationOptions",
+  "legendsDef": {},
+  "functionVariables": {},
+  "activationType": "NamedAction",
+  "code": 691864,
+  "actionName": "CorLabF3.PrescrPendWJPGenericAction",
+  "parameters": {
+   "_schematicObjCode": 688563,
+   "PARENT_FILTER_PARAMS": {
+    "DT_INICIAL": {
+     "@class": "java.time.Instant",
+     "type": "INSTANT",
+     "value": "2026-10-09T03:00:00.000Z"
+    },
+    "DT_FINAL": {
+     "@class": "java.time.Instant",
+     "type": "INSTANT",
+     "value": "2026-10-14T02:59:59.000Z"
+    },
+    "IE_RESULT_STAGES": 30,
+    "NR_SEQ_GRUPO_EXAME": null,
+    "CD_SETOR_ATENDIMENTO": null,
+    "NR_ATENDIMENTO": null,
+    "IE_TIPO_ATENDIMENTO": null,
+    "IE_CLINICA": null,
+    "CD_SETOR_ATUAL": "0",
+    "CD_PROCEDENCIA": null,
+    "IE_COMUNICACAO_CRITICO": null,
+    "IE_RECOLETA": "2",
+    "IE_LOTE_EXTERNO": "N",
+    "IE_EXAME_LOTE": "N",
+    "IE_MOTIVO_RECOLETA": "N",
+    "IE_EXAMES_REPETICAO": "N",
+    "IE_SOMENTE_HOJE": "N",
+    "IE_BLOQUEADOS": "N",
+    "IE_URGENCIA": "N",
+    "IE_SOMENTE_PA": "N",
+    "IE_EXIBIR_PENDENTES": "N",
+    "IE_EXAME_ETAPA": "N",
+    "IE_AMOSTRA": "N",
+    "IE_ATRASO_15": "N",
+    "IE_ATRASO": "N",
+    "IE_RESTRINGE_RESULTADO": "N",
+    "IE_CONSIDERAR_EXAMES_BAIXADOS": "N",
+    "IE_COLLECT": "N"
+   },
+   "PARAM_QUINZE": "",
+   "IE_STATUS_ATEND": 30,
+   "PENDING_PRESCRIPTION_VALUES": null,
+   "_dimensionValues": {},
+   "DT_INICIAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-09T03:00:00.000Z"
+   },
+   "DT_FINAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-14T02:59:59.000Z"
+   }
+  },
+  "pageBegin": 1,
+  "page": 1,
+  "recordsPerPage": 1000,
+  "sortAscending": true,
+  "featureCode": 722,
+  "tableDescription": "722_691864_dg",
+  "unificarCountRegistros": true,
+  "saveGridColumnOrder": true
+ },
+ "resultado_filtro": {
+  "NR_SEQUENCIA_PROC": 1,
+  "NR_SEQ_RESULTADO": null,
+  "NR_ATENDIMENTO": null,
+  "IE_FILTRO_RESULTADO": true,
+  "IE_INTEG_CURVA_AMOSTRA": "N",
+  "NR_SEQ_GRUPO_EXAME": 0,
+  "DS_FILTRO_RESULTADO": {
+   "DT_INICIAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-10T03:00:00.000Z"
+   },
+   "DT_FINAL": {
+    "@class": "java.time.Instant",
+    "type": "INSTANT",
+    "value": "2026-10-14T02:59:59.000Z"
+   },
+   "IE_RESULT_STAGES": 30,
+   "NR_SEQ_GRUPO_EXAME": null,
+   "CD_SETOR_ATENDIMENTO": null,
+   "NR_ATENDIMENTO": null,
+   "IE_TIPO_ATENDIMENTO": null,
+   "IE_CLINICA": null,
+   "CD_SETOR_ATUAL": "0",
+   "CD_PROCEDENCIA": null,
+   "IE_COMUNICACAO_CRITICO": null,
+   "IE_RECOLETA": "2",
+   "IE_LOTE_EXTERNO": "N",
+   "IE_EXAME_LOTE": "N",
+   "IE_MOTIVO_RECOLETA": "N",
+   "IE_EXAMES_REPETICAO": "N",
+   "IE_SOMENTE_HOJE": "N",
+   "IE_BLOQUEADOS": "N",
+   "IE_URGENCIA": "N",
+   "IE_SOMENTE_PA": "N",
+   "IE_EXIBIR_PENDENTES": "N",
+   "IE_EXAME_ETAPA": "N",
+   "IE_AMOSTRA": "N",
+   "IE_ATRASO_15": "N",
+   "IE_ATRASO": "N",
+   "IE_RESTRINGE_RESULTADO": "N",
+   "IE_CONSIDERAR_EXAMES_BAIXADOS": "N",
+   "IE_COLLECT": "N"
+  },
+  "NR_SEQ_LOTE_EXAME": 0
+ }
+}
