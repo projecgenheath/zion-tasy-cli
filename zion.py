@@ -3,6 +3,7 @@
 
 Uso:
   python3 zion.py login                       # testa login + perfil
+  python3 zion.py fila [--status N] [--exames] [--resumo]  # fila geral, sem atendimento
   python3 zion.py listar ATENDIMENTO          # linhas/status por fase
   python3 zion.py digitacao ATENDIMENTO [--dry-run] [--desde STATUS]
   python3 zion.py ler ATENDIMENTO              # valores salvos dos exames em Digitação
@@ -316,6 +317,29 @@ def fmt_sample(a):
     r = a["row"]
     exs = ", ".join(f"{e.get('NR_SEQ_PRESCR')}:{e.get('CD_EXAME') or e.get('DS_PROCEDIMENTO')}[{e.get('IE_STATUS_ATEND')}]" for e in a["exames"])
     return f"  prescr {r.get('NR_PRESCRICAO')} amostra {r.get('NR_SEQ_AMOSTRA')} ({len(a['exames'])} exames): {exs}"
+
+
+def cmd_fila(z, status=None, exames=False, atend_only=False):
+    """Fila geral (sem número de atendimento): pendentes por etapa nos últimos 4 dias."""
+    phases = [status] if status else list(PHASES)
+    tot_at = set()
+    for ph in phases:
+        rows = z.datasource(master_body(ph, None))
+        ats = {}
+        for r in rows:
+            ats.setdefault(r.get("NR_ATENDIMENTO"), []).append(r)
+        tot_at.update(ats)
+        print(f"[{PHASES[ph][3]}] status {ph} {STATUS[ph]}: {len(ats)} atendimento(s), {len(rows)} amostra(s)")
+        if atend_only:
+            continue
+        for at, rs in ats.items():
+            r = rs[0]
+            print(f"  AT {at} | {r.get('NM_PESSOA_FISICA')} | {r.get('DS_SETOR_ATUAL')} | leito {str(r.get('LEITO_ATUAL') or '').strip()}")
+            if exames:
+                for row in rs:
+                    ex = z.datasource(child_body(ph, None, row))
+                    print("  " + fmt_sample({"row": row, "exames": ex}))
+    print(f"Total: {len(tot_at)} atendimento(s) distintos (um atendimento pode estar em mais de uma etapa).")
 
 
 def cmd_listar(z, atend):
@@ -944,6 +968,10 @@ def main():
     ap = argparse.ArgumentParser(prog="zion.py")
     sp = ap.add_subparsers(dest="cmd", required=True)
     sp.add_parser("login")
+    fl = sp.add_parser("fila", help="fila geral de pendentes por etapa, sem número de atendimento")
+    fl.add_argument("--status", type=int, choices=[10, 20, 25, 26, 30], help="só esta etapa")
+    fl.add_argument("--exames", action="store_true", help="lista também amostras e exames de cada atendimento")
+    fl.add_argument("--resumo", action="store_true", help="só as contagens")
     l = sp.add_parser("listar"); l.add_argument("atendimento", type=int)
     d = sp.add_parser("digitacao"); d.add_argument("atendimento", type=int)
     d.add_argument("--dry-run", action="store_true")
@@ -968,6 +996,8 @@ def main():
     t0 = time.time(); z = Zion()
     if a.cmd == "login":
         z.login()
+    elif a.cmd == "fila":
+        cmd_fila(z, a.status, a.exames, a.resumo)
     elif a.cmd == "listar":
         cmd_listar(z, a.atendimento)
     elif a.cmd == "digitacao":

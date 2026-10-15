@@ -18,6 +18,13 @@ Nunca imprima a senha, nunca a coloque no chat, em commits ou logs; nunca leia `
 - Use `python3` (pode não existir `python`).
 - Comunique-se com o usuário em português do Brasil.
 
+## Ver a fila (sem número de atendimento)
+Quando perguntarem "quantos pacientes/exames pendentes", "o que tem na fila", etc., **não peça número de atendimento**. Use:
+- `python3 zion.py fila --resumo`: contagem por etapa (10 Pendente coleta, 20 Material Coletado, 25 Em Análise, 26 Interfaceamento, 30 Digitação do Resultado).
+- `python3 zion.py fila`: lista atendimentos (paciente, setor, leito) por etapa.
+- `python3 zion.py fila --status 30 --exames`: amostras e exames de uma etapa (ex.: tudo que está esperando digitação).
+Janela: pedidos dos últimos 4 dias.
+
 ## Fluxo padrão
 1. `python3 zion.py listar AT` para ver o que existe.
 2. `python3 zion.py digitacao AT` para levar os exames a Digitação (`--dry-run` antes se houver dúvida).
