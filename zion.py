@@ -844,7 +844,7 @@ HEMO_SIGLA = "HC"
 HEMO_DIRETOS = [("rbc", 536, "Hemácias"), ("hgb", 1473, "Hemoglobina"), ("hct", 1472, "Hematócrito"),
                 ("vcm", 540, "VCM"), ("hcm", 541, "HCM"), ("chcm", 542, "CHCM"), ("rdw", 539, "RDW"),
                 ("wbc", 1489, "Leucócitos"), ("vpm", 36966, "VPM")]
-HEMO_DIF = [("neu", 1480, 546, "Segmentados"), ("lym", 36603, 549, "Linfócitos"), ("mon", 1487, 550, "Monócitos"),
+HEMO_DIF = [("bast", 36601, 545, "Bastonetes"), ("neu", 1480, 546, "Segmentados"), ("lym", 36603, 549, "Linfócitos"), ("mon", 1487, 550, "Monócitos"),
             ("eos", 36602, 547, "Eosinófilos"), ("bas", 36607, 548, "Basófilos")]
 HEMO_TOT, HEMO_PCT_TOT, HEMO_PLT = 36513, 36623, 1076
 HEMO_FATOR_SRV = {HEMO_PLT: 1000}   # gravado = enviado * fator
@@ -855,14 +855,24 @@ def half_up(x):
     return int(decimal.Decimal(str(x)).quantize(decimal.Decimal("1"), rounding=decimal.ROUND_HALF_UP))
 
 
-def hemo_percentuais(v):
-    p = {k: half_up(float(str(v[k]).replace(",", "."))) for k, *_ in HEMO_DIF}
+def hemo_percentuais(v, wbc_total=0):
+    p = {k: half_up(float(str(v.get(k) or 0).replace(",", "."))) for k, *_ in HEMO_DIF}
     while sum(p.values()) > 100:
         if p["bas"] > 0: p["bas"] -= 1
         else:
             k = min((k for k in p if p[k] > 0), key=lambda k: p[k]); p[k] -= 1
     while sum(p.values()) < 100:
         k = max(p, key=lambda k: p[k]); p[k] += 1
+    # Regra obrigatória do laboratório: Eosinófilos >= 1 sempre; se Leucócitos Totais > 10.000,
+    # também Bastonetes >= 1. Os pontos acrescentados saem do maior percentual (total fica 100).
+    minimos = {"eos": 1}
+    if wbc_total > 10000: minimos["bast"] = 1
+    for k, m in minimos.items():
+        if p[k] < m:
+            add = m - p[k]; p[k] = m
+            maior = max((x for x in p if x not in minimos), key=lambda x: p[x])
+            p[maior] -= add
+            print(f"Regra mínima: {k} ajustado para {m}; {maior} reduzido em {add} (agora {p[maior]})")
     return p
 
 
@@ -877,7 +887,7 @@ def hemo_alvo(a):
     for opt, seq, _ in HEMO_DIRETOS:
         env[seq] = parse_val(getattr(a, opt))[0]
     wbc = env[1489]; tot = half_up(wbc * 1000); env[HEMO_TOT] = tot
-    p = hemo_percentuais({k: getattr(a, k) for k, *_ in HEMO_DIF})
+    p = hemo_percentuais({k: getattr(a, k, 0) for k, *_ in HEMO_DIF}, tot)
     for k, sp, sa, _ in HEMO_DIF:
         env[sp] = p[k]; env[sa] = half_up(p[k] / 100 * tot)
     env[HEMO_PCT_TOT] = sum(p.values())

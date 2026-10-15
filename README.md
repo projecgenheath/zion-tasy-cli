@@ -104,6 +104,8 @@ python3 zion.py gaso 123456 --ph 7.458 --pco2 36.9 --po2 52.4 --hco3 26.4 --be 2
 ### `hemo AT --rbc --hgb --hct --vcm --hcm --chcm --rdw --wbc --neu --lym --mon --eos --bas --plt --vpm [--dry-run] [--forcar]`
 Digita o **Hemograma Completo** com os valores **exatamente como no impresso do analisador**:
 
+**Regra obrigatória do hemograma (automática no `hemo`):** Eosinófilos ≥ 1% sempre; se Leucócitos Totais > 10.000, também Bastonetes ≥ 1%. Os pontos acrescentados saem do maior percentual (normalmente segmentados) e o Total porcentagem Leucograma fica em 100. O CLI imprime o ajuste feito.
+
 - `--wbc` em 10³/µL (ex.: 14.06). Leucócitos Totais = WBC × 1000; os absolutos o sistema calcula.
 - `--plt` em 10⁹/L (ex.: 174). O servidor multiplica por 1000 (→ 174.000).
 - `--neu --lym --mon --eos --bas` em %: arredondados meio-para-cima; se a soma passar de 100, o basófilo é reduzido primeiro, fechando 100.
