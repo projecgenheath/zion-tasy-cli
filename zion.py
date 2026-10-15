@@ -831,7 +831,7 @@ def cmd_gaso(z, atend, a, dry, forcar, dump=None):
             if s: pedidos.append((s, None, vals[opt]))
     if not pedidos:
         print("Bioquímica: nenhum exame equivalente em Digitação."); return
-    print("Bioquímica equivalente: " + ", ".join(f"{k}={v}" for k, v in pedidos))
+    print("Bioquímica equivalente: " + ", ".join(f"{k}={v}" for k, _, v in pedidos))
     lancar(z, atend, pedidos, dry, forcar, telas)
 
 
