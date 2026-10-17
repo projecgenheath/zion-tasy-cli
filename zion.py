@@ -702,6 +702,10 @@ def lancar(z, atend, pedidos, dry, forcar, telas=None, dump=None):
         if conf and not forcar:
             print(f"  {tag}: já tem valor diferente salvo ({'; '.join(f'{n}: {vtxt(o)} ≠ {vtxt(f)}' for n, o, f in conf)}) - não sobrescrevi (use --forcar)")
             rel.append((tag, "já tinha valor")); continue
+        fora = [n for sq, (n, f, dec, s) in cs.items() if s.get("visible") is False and s.get("lineNumber") is None]
+        if fora:   # ex.: TAP: campo principal fora do layout do formato -> o save devolve saved=True mas grava 0
+            print(f"  {tag}: AVISO: {', '.join(fora)} não está no formato de digitação da tela (visible=False, sem linha); "
+                  "o servidor costuma ignorar esse campo - confira a releitura")
         env = {sq: f for sq, (n, f, dec, s) in cs.items()}
         novo = ds_payload(vo, env)
         dumps.append({"exame": it["CD_EXAME"], "payload": [H(novo)]})
