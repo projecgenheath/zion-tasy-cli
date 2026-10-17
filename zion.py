@@ -299,8 +299,11 @@ def check_response(path, resp):
     if not isinstance(resp, dict):
         return
     v = lambda k: (resp.get(k) or {}).get("valor") if isinstance(resp.get(k), dict) else resp.get(k)
+    # QT_EXAME_SUSP_P conta itens suspensos da PRESCRIÇÃO inteira. Esses itens não aparecem na fila de
+    # Exames Pendentes (só movemos linhas que a própria fila trouxe) e o navegador segue sem diálogo.
+    # Então só avisa e continua.
     if path.endswith("28710") and str(v("QT_EXAME_SUSP_P") or "0") != "0":
-        raise RuntimeError(f"28710: QT_EXAME_SUSP_P={v('QT_EXAME_SUSP_P')} (exame suspenso) - parei")
+        print(f"  (aviso: prescrição tem {v('QT_EXAME_SUSP_P')} exame(s) suspenso(s) fora da fila - igual ao navegador, segue)")
     if path.endswith("33538") and v("DS_EXAMES_MEST_P"):
         raise RuntimeError("33538 pediu data da menstruação (DS_EXAMES_MEST_P) - parei")
     if path.endswith("28842") and v("DS_MENSAGEM_P"):
