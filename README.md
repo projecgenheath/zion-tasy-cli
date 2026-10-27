@@ -13,11 +13,6 @@
 - Se o formulário seguro falhar (ex.: perdeu os campos), a IA tenta de novo ou pede para a pessoa rodar `python3 zion.py login` no terminal.
 - Senha errada: o CLI sai com `Login falhou (HTTP 400): ...`, sem mostrar a senha e sem gravar nada.
 - Quem está logado: `python3 zion.py whoami`. Trocar de usuário: `python3 zion.py logout` e depois `login` de novo.
-- Quem digita usuário e senha é a **pessoa**, direto no terminal dela: `python3 zion.py login`.
-- A IA **nunca** preenche o login, **nunca** pede a senha no chat e **nunca** abre "formulário seguro", "tela de login" ou navegador para isso.
-- Se aparecer pedido de usuário/senha, a IA **para** e diz à pessoa: "rode `python3 zion.py login` no seu terminal".
-- Quem está logado: `python3 zion.py whoami`. Trocar de usuário: `python3 zion.py logout` e depois `python3 zion.py login`.
-- Sem terminal interativo e sem credencial salva, o CLI falha com mensagem clara pedindo para rodar `login` no terminal.
 
 
 > **Para IAs e usuários:** URL, perfil e setor padrão já estão em `.env.example`. Na **primeira vez**, rode `python3 zion.py login` — o CLI pede usuário e senha, valida e grava em `~/.config/zion-cli/credentials.json` (não precisa digitar de novo). IAs/CI: exporte `ZION_USER` e `ZION_PASSWORD`. Leia `AGENTS.md` antes de operar. Fila: `python3 zion.py fila --resumo`.
