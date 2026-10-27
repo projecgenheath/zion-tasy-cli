@@ -18,9 +18,12 @@ Nunca imprima a senha, nunca a coloque no chat, em commits ou logs; nunca leia `
 ## Ver a fila (sem número de atendimento)
 Quando perguntarem "quantos pacientes/exames pendentes", "o que tem na fila", etc., **não peça número de atendimento**. Use:
 - `python3 zion.py fila --resumo`: contagem por etapa (10 Pendente coleta, 20 Material Coletado, 25 Em Análise, 26 Interfaceamento, 30 Digitação do Resultado).
-- `python3 zion.py fila`: lista atendimentos (paciente, setor, leito) por etapa.
+- `python3 zion.py fila`: lista atendimentos (paciente, setor, leito) por etapa, **com a hora da solicitação**.
 - `python3 zion.py fila --status 30 --exames`: amostras e exames de uma etapa (ex.: tudo que está esperando digitação).
-Janela: pedidos dos últimos 4 dias.
+- `python3 zion.py fila --de "27/10/2026 08:00" --ate "27/10/2026 12:00"`: filtra pela hora da solicitação.
+- `python3 zion.py fila --status 30 --json`: JSON com `dt_prescricao` / `dt_prescricao_iso`.
+
+**Hora da solicitação:** campo da API **`DT_PRESCRICAO`**, exibido como `dd/mm/aaaa HH:MM` no fuso America/Sao_Paulo. Também em `listar`, `digitacao` e `conferir`. `--de` / `--ate` aceitam `DD/MM/AAAA` ou `DD/MM/AAAA HH:MM` (quote no shell quando houver espaço). Sem `--de`/`--ate`: últimos 4 dias. Ordenação sempre por essa hora.
 
 ## Conferir ≠ Pendentes
 
@@ -34,12 +37,13 @@ Janela: pedidos dos últimos 4 dias.
 ## Conferir liberados (erros de digitação / críticos)
 Quando pedirem para "verificar resultados críticos", "conferir liberações", "ver se digitou errado" (ex. plaquetas 200.000.000), use:
 ```bash
-python3 zion.py conferir                  # hoje 00:00 → agora
-python3 zion.py conferir --de 27/10/2026
+python3 zion.py conferir                  # hoje 00:00 → agora (DT_PRESCRICAO)
+python3 zion.py conferir --de "27/10/2026"
+python3 zion.py conferir --de "27/10/2026 08:00" --ate "27/10/2026 12:00"
 python3 zion.py conferir --at AT
-python3 zion.py conferir --json
+python3 zion.py conferir --json           # inclui dt_prescricao / campo_hora=DT_PRESCRICAO
 ```
-- Cobre **absolutamente todos** os exames com status **40 = Exame Liberado** do período (paginação completa; todas as prescrições, exames e campos).
+- Cobre **absolutamente todos** os exames com status **40 = Exame Liberado** do período (paginação completa; todas as prescrições, exames e campos). Cada linha mostra a hora da solicitação (`DT_PRESCRICAO`).
 - Exames da mesma presc com outro status (30 Digitação, etc.) são **ignorados** e contados à parte — não são pendentes da conferência.
 - **Só leitura** — não salva, não aprova, não libera.
 - Classifica em **possível erro de digitação** e **resultado crítico**; termina com totais e a lista de exames sem achados.

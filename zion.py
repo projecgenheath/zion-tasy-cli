@@ -5,9 +5,10 @@ Uso:
   python3 zion.py login                       # pede/grava credenciais e testa login + perfil
   python3 zion.py logout                      # apaga credenciais salvas
   python3 zion.py whoami                      # mostra só o usuário salvo
-  python3 zion.py fila [--status N] [--exames] [--resumo]  # fila geral, sem atendimento
-  python3 zion.py listar ATENDIMENTO          # linhas/status por fase
-  python3 zion.py digitacao ATENDIMENTO [--dry-run] [--desde STATUS]
+  python3 zion.py fila [--status N] [--exames] [--resumo] [--de] [--ate] [--json]
+  python3 zion.py listar ATENDIMENTO [--de] [--ate] [--json]
+  python3 zion.py digitacao ATENDIMENTO [--dry-run] [--desde STATUS] [--de] [--ate]
+  # Hora da solicitação = campo DT_PRESCRICAO (dd/mm/aaaa HH:MM, America/Sao_Paulo)
   python3 zion.py ler ATENDIMENTO              # valores salvos dos exames em Digitação
   python3 zion.py resultado AT --exame NA+=134.9 [--exame ...] [--dry-run] [--forcar]
   python3 zion.py gaso AT --na 134.9 --k 4.37 --ica 1.08 --cl 105.7 [--glu --lac --ph ...] [--dry-run] [--forcar]
@@ -460,13 +461,96 @@ class Zion:
 
 
 # ---------- montagem de corpos ----------
-def date_range(days=4):
+def date_range(days=4, ini=None, fim=None):
+    """Janela Instant da API. Padrão: últimos `days` dias (00:00 → 23:59 America/Sao_Paulo).
+    Se ini/fim forem datetime, usa esses limites (também em TZ)."""
     today = dt.datetime.now(TZ).date()
-    ini = dt.datetime.combine(today - dt.timedelta(days=days), dt.time(0, 0, 0), TZ)
-    fim = dt.datetime.combine(today, dt.time(23, 59, 59), TZ)
+    if ini is None:
+        ini = dt.datetime.combine(today - dt.timedelta(days=days), dt.time(0, 0, 0), TZ)
+    if fim is None:
+        fim = dt.datetime.combine(today, dt.time(23, 59, 59), TZ)
     f = lambda x: {"@class": "java.time.Instant", "type": "INSTANT",
                    "value": x.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")}
     return f(ini), f(fim)
+
+
+def instant_to_local(v):
+    """Converte Instant/dict/str do servidor → datetime em America/Sao_Paulo, ou None."""
+    if v is None:
+        return None
+    if isinstance(v, dt.datetime):
+        return v.astimezone(TZ) if v.tzinfo else v.replace(tzinfo=TZ)
+    if isinstance(v, dict):
+        val = v.get("value") or v.get("dados") or v.get("valor")
+        if not val:
+            return None
+        v = val
+    if not isinstance(v, str) or not v.strip():
+        return None
+    s = v.strip().replace("Z", "+00:00")
+    try:
+        d = dt.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=dt.timezone.utc)
+    return d.astimezone(TZ)
+
+
+def row_dt_prescr(row):
+    """Hora da solicitação/prescrição = campo DT_PRESCRICAO da API (fila master/liberados)."""
+    if not isinstance(row, dict):
+        return None
+    return instant_to_local(row.get("DT_PRESCRICAO"))
+
+
+def fmt_dt_prescr(row, fmt="%d/%m/%Y %H:%M"):
+    d = row_dt_prescr(row)
+    return d.strftime(fmt) if d else "?"
+
+
+def filter_rows_by_prescr(rows, ini=None, fim=None):
+    """Filtra pela DT_PRESCRICAO (hora da solicitação). Sem ini/fim, devolve a lista intacta."""
+    if ini is None and fim is None:
+        return list(rows)
+    out = []
+    for r in rows:
+        d = row_dt_prescr(r)
+        if d is None:
+            continue
+        if ini is not None and d < ini:
+            continue
+        if fim is not None and d > fim:
+            continue
+        out.append(r)
+    return out
+
+
+def sort_rows_by_prescr(rows):
+    epoch = dt.datetime(1970, 1, 1, tzinfo=TZ)
+    return sorted(rows, key=lambda r: row_dt_prescr(r) or epoch)
+
+
+def resolve_de_ate(de=None, ate=None, default_days=None):
+    """Interpreta --de/--ate. Se ambos omitidos e default_days for int, usa últimos N dias.
+    Se só um for passado, completa o outro com início/fim do dia (ou agora)."""
+    agora = dt.datetime.now(TZ)
+    ini = fim = None
+    if de:
+        ini = parse_dt_arg(de, fim_do_dia=False)
+        if " " not in de.strip():
+            ini = ini.replace(hour=0, minute=0, second=0)
+    if ate:
+        fim = parse_dt_arg(ate, fim_do_dia=True)
+    if ini is None and fim is None and default_days is not None:
+        today = agora.date()
+        ini = dt.datetime.combine(today - dt.timedelta(days=default_days), dt.time(0, 0, 0), TZ)
+        fim = dt.datetime.combine(today, dt.time(23, 59, 59), TZ)
+    elif ini is None and fim is not None:
+        ini = fim.replace(hour=0, minute=0, second=0)
+    elif fim is None and ini is not None:
+        fim = agora if ini.date() == agora.date() else ini.replace(hour=23, minute=59, second=59)
+    return ini, fim
 
 
 def _set_filter(p, atend, status, stage_field, ini, fim):
@@ -475,13 +559,14 @@ def _set_filter(p, atend, status, stage_field, ini, fim):
     p[stage_field] = status
 
 
-def master_body(phase, atend):
+def master_body(phase, atend, ini=None, fim=None):
     mk, _, sf, _ = PHASES[phase]
-    b = copy.deepcopy(TPL[mk]); ini, fim = date_range()
+    b = copy.deepcopy(TPL[mk])
+    ini_i, fim_i = date_range(ini=ini, fim=fim)
     p = b["parameters"]
-    _set_filter(p, atend, phase, sf, ini, fim); p["IE_STATUS_ATEND"] = phase
+    _set_filter(p, atend, phase, sf, ini_i, fim_i); p["IE_STATUS_ATEND"] = phase
     if "filterValues" in b:
-        _set_filter(b["filterValues"], atend, phase, sf, ini, fim)
+        _set_filter(b["filterValues"], atend, phase, sf, ini_i, fim_i)
     return b
 
 
@@ -494,23 +579,27 @@ def to_request_value(v):
     return v
 
 
-def child_body(phase, atend, row):
+def child_body(phase, atend, row, ini=None, fim=None):
     _, ck, sf, _ = PHASES[phase]
-    b = copy.deepcopy(TPL[ck]); ini, fim = date_range()
+    b = copy.deepcopy(TPL[ck])
+    ini_i, fim_i = date_range(ini=ini, fim=fim)
     p = b["parameters"]
-    _set_filter(p["PARENT_FILTER_PARAMS"], atend, phase, sf, ini, fim)
+    _set_filter(p["PARENT_FILTER_PARAMS"], atend, phase, sf, ini_i, fim_i)
     p["IE_STATUS_ATEND"] = phase
-    p["DT_INICIAL"], p["DT_FINAL"] = ini, fim
+    p["DT_INICIAL"], p["DT_FINAL"] = ini_i, fim_i
     p["PENDING_PRESCRIPTION_VALUES"] = {k: to_request_value(v) for k, v in row.items()}
     return b
 
 
-def collect(z, atend, phases=(10, 20, 25, 26, 30)):
-    """Retorna lista de amostras: dict(fase, row, exames)."""
+def collect(z, atend, phases=(10, 20, 25, 26, 30), ini=None, fim=None):
+    """Retorna lista de amostras: dict(fase, row, exames). Filtra por DT_PRESCRICAO se ini/fim."""
     out = []
     for ph in phases:
-        for row in z.datasource(master_body(ph, atend)):
-            ex = z.datasource(child_body(ph, atend, row))
+        rows = filter_rows_by_prescr(
+            sort_rows_by_prescr(z.datasource(master_body(ph, atend, ini=ini, fim=fim))),
+            ini, fim)
+        for row in rows:
+            ex = z.datasource(child_body(ph, atend, row, ini=ini, fim=fim))
             out.append({"fase": ph, "row": row, "exames": ex})
     return out
 
@@ -588,55 +677,134 @@ def check_response(path, resp):
 def fmt_sample(a):
     r = a["row"]
     exs = ", ".join(f"{e.get('NR_SEQ_PRESCR')}:{e.get('CD_EXAME') or e.get('DS_PROCEDIMENTO')}[{e.get('IE_STATUS_ATEND')}]" for e in a["exames"])
-    return f"  prescr {r.get('NR_PRESCRICAO')} amostra {r.get('NR_SEQ_AMOSTRA')} ({len(a['exames'])} exames): {exs}"
+    return (f"  prescr {r.get('NR_PRESCRICAO')} amostra {r.get('NR_SEQ_AMOSTRA')}"
+            f" | {fmt_dt_prescr(r)} | ({len(a['exames'])} exames): {exs}")
 
 
-def cmd_fila(z, status=None, exames=False, atend_only=False):
-    """Fila geral (sem número de atendimento): pendentes por etapa nos últimos 4 dias."""
-    print("EXAMES PENDENTES (fila por etapa) — NÃO é conferência de liberados.")
-    print("Para auditar resultados já liberados (status 40), use: python3 zion.py conferir\n")
+def cmd_fila(z, status=None, exames=False, atend_only=False, de=None, ate=None, as_json=False):
+    """Fila geral (sem número de atendimento): pendentes por etapa.
+    Hora exibida/filtrada = DT_PRESCRICAO (solicitação). Padrão: últimos 4 dias."""
+    ini, fim = resolve_de_ate(de, ate, default_days=4)
+    if not as_json:
+        print("EXAMES PENDENTES (fila por etapa) — NÃO é conferência de liberados.")
+        print("Para auditar resultados já liberados (status 40), use: python3 zion.py conferir")
+        print(f"Hora da solicitação = DT_PRESCRICAO | filtro: "
+              f"{ini.strftime('%d/%m/%Y %H:%M')} → {fim.strftime('%d/%m/%Y %H:%M')} (America/Sao_Paulo)\n")
     phases = [status] if status else list(PHASES)
     tot_at = set()
+    payload = {"campo_hora": "DT_PRESCRICAO", "periodo": {"de": ini.isoformat(), "ate": fim.isoformat()},
+               "etapas": []}
     for ph in phases:
-        rows = z.datasource(master_body(ph, None))
+        rows = filter_rows_by_prescr(
+            sort_rows_by_prescr(z.datasource(master_body(ph, None, ini=ini, fim=fim))),
+            ini, fim)
         ats = {}
         for r in rows:
             ats.setdefault(r.get("NR_ATENDIMENTO"), []).append(r)
         tot_at.update(ats)
-        print(f"[{PHASES[ph][3]}] status {ph} {STATUS[ph]}: {len(ats)} atendimento(s), {len(rows)} amostra(s)")
-        if atend_only:
+        etapa = {"status": ph, "nome": STATUS[ph], "fase": PHASES[ph][3],
+                 "atendimentos": len(ats), "amostras": len(rows), "itens": []}
+        if not as_json:
+            print(f"[{PHASES[ph][3]}] status {ph} {STATUS[ph]}: {len(ats)} atendimento(s), {len(rows)} amostra(s)")
+        if atend_only and not as_json:
+            payload["etapas"].append(etapa)
             continue
-        for at, rs in ats.items():
+        # ordena atendimentos pela menor DT_PRESCRICAO das amostras
+        def _at_key(item):
+            at, rs = item
+            return min((row_dt_prescr(r) or dt.datetime(1970, 1, 1, tzinfo=TZ)) for r in rs)
+        for at, rs in sorted(ats.items(), key=_at_key):
+            rs = sort_rows_by_prescr(rs)
             r = rs[0]
-            print(f"  AT {at} | {r.get('NM_PESSOA_FISICA')} | {r.get('DS_SETOR_ATUAL')} | leito {str(r.get('LEITO_ATUAL') or '').strip()}")
-            if exames:
+            item = {
+                "atendimento": at,
+                "dt_prescricao": fmt_dt_prescr(r),
+                "dt_prescricao_iso": (row_dt_prescr(r).isoformat() if row_dt_prescr(r) else None),
+                "setor": r.get("DS_SETOR_ATUAL"),
+                "leito": str(r.get("LEITO_ATUAL") or "").strip(),
+                "prescricoes": [],
+            }
+            if not as_json and not atend_only:
+                print(f"  AT {at} | {fmt_dt_prescr(r)} | {r.get('NM_PESSOA_FISICA')} | "
+                      f"{r.get('DS_SETOR_ATUAL')} | leito {str(r.get('LEITO_ATUAL') or '').strip()}")
+            if exames or as_json:
                 for row in rs:
-                    ex = z.datasource(child_body(ph, None, row))
-                    print("  " + fmt_sample({"row": row, "exames": ex}))
+                    ex = z.datasource(child_body(ph, None, row, ini=ini, fim=fim))
+                    if not as_json and exames:
+                        print("  " + fmt_sample({"row": row, "exames": ex}))
+                    item["prescricoes"].append({
+                        "prescricao": row.get("NR_PRESCRICAO"),
+                        "amostra": row.get("NR_SEQ_AMOSTRA"),
+                        "dt_prescricao": fmt_dt_prescr(row),
+                        "dt_prescricao_iso": (row_dt_prescr(row).isoformat() if row_dt_prescr(row) else None),
+                        "exames": [{"seq": e.get("NR_SEQ_PRESCR"),
+                                    "sigla": e.get("CD_EXAME") or e.get("DS_PROCEDIMENTO"),
+                                    "status": e.get("IE_STATUS_ATEND")} for e in ex],
+                    })
+            # sem --exames ainda listamos o atendimento no JSON
+            if as_json or not atend_only:
+                # omit patient name from JSON for safety? User said public repo no patient data;
+                # runtime JSON to stdout is OK for operators. Keep name out of JSON to be safer for IAs piping.
+                etapa["itens"].append(item)
+        payload["etapas"].append(etapa)
+    if as_json:
+        payload["total_atendimentos"] = len(tot_at)
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        return payload
     print(f"Total: {len(tot_at)} atendimento(s) distintos (um atendimento pode estar em mais de uma etapa).")
 
 
-def cmd_listar(z, atend):
-    print("EXAMES PENDENTES do atendimento — NÃO é conferência de liberados.")
-    print("Para auditar resultados já liberados (status 40), use: python3 zion.py conferir\n")
-    data = collect(z, atend)
-    if data:
+def cmd_listar(z, atend, de=None, ate=None, as_json=False):
+    ini, fim = resolve_de_ate(de, ate, default_days=4)
+    if not as_json:
+        print("EXAMES PENDENTES do atendimento — NÃO é conferência de liberados.")
+        print("Para auditar resultados já liberados (status 40), use: python3 zion.py conferir")
+        print(f"Hora da solicitação = DT_PRESCRICAO | filtro: "
+              f"{ini.strftime('%d/%m/%Y %H:%M')} → {fim.strftime('%d/%m/%Y %H:%M')} (America/Sao_Paulo)\n")
+    data = collect(z, atend, ini=ini, fim=fim)
+    if data and not as_json:
         r = data[0]["row"]
-        print(f"Atendimento {atend}: {r.get('NM_PESSOA_FISICA')} | {r.get('DS_SETOR_ATUAL')} | leito {str(r.get('LEITO_ATUAL') or '').strip()}")
+        print(f"Atendimento {atend}: {r.get('NM_PESSOA_FISICA')} | {r.get('DS_SETOR_ATUAL')} | "
+              f"leito {str(r.get('LEITO_ATUAL') or '').strip()}")
+    payload = {"campo_hora": "DT_PRESCRICAO", "atendimento": atend,
+               "periodo": {"de": ini.isoformat(), "ate": fim.isoformat()}, "etapas": []}
     for ph in PHASES:
         items = [a for a in data if a["fase"] == ph]
-        print(f"[{PHASES[ph][3]}] status {ph} {STATUS[ph]}: {len(items)} amostra(s), {sum(len(a['exames']) for a in items)} linha(s)")
+        items = sorted(items, key=lambda a: row_dt_prescr(a["row"]) or dt.datetime(1970, 1, 1, tzinfo=TZ))
+        etapa = {"status": ph, "nome": STATUS[ph], "amostras": len(items),
+                 "linhas": sum(len(a["exames"]) for a in items), "itens": []}
+        if not as_json:
+            print(f"[{PHASES[ph][3]}] status {ph} {STATUS[ph]}: {len(items)} amostra(s), "
+                  f"{sum(len(a['exames']) for a in items)} linha(s)")
         for a in items:
-            print(fmt_sample(a))
+            if not as_json:
+                print(fmt_sample(a))
+            r = a["row"]
+            etapa["itens"].append({
+                "prescricao": r.get("NR_PRESCRICAO"),
+                "amostra": r.get("NR_SEQ_AMOSTRA"),
+                "dt_prescricao": fmt_dt_prescr(r),
+                "dt_prescricao_iso": (row_dt_prescr(r).isoformat() if row_dt_prescr(r) else None),
+                "exames": [{"seq": e.get("NR_SEQ_PRESCR"),
+                            "sigla": e.get("CD_EXAME") or e.get("DS_PROCEDIMENTO"),
+                            "status": e.get("IE_STATUS_ATEND")} for e in a["exames"]],
+            })
+        payload["etapas"].append(etapa)
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        return payload
     if not data:
-        print("Nenhuma linha encontrada nos últimos 4 dias.")
+        print("Nenhuma linha encontrada no período.")
     return data
 
 
-def cmd_digitacao(z, atend, dry, desde=None):
+def cmd_digitacao(z, atend, dry, desde=None, de=None, ate=None):
+    ini, fim = resolve_de_ate(de, ate, default_days=4)
     print("EXAMES PENDENTES → Digitação do Resultado — NÃO é conferência de liberados.")
-    print("Para auditar resultados já liberados (status 40), use: python3 zion.py conferir\n")
-    data = collect(z, atend)
+    print("Para auditar resultados já liberados (status 40), use: python3 zion.py conferir")
+    print(f"Hora da solicitação = DT_PRESCRICAO | filtro: "
+          f"{ini.strftime('%d/%m/%Y %H:%M')} → {fim.strftime('%d/%m/%Y %H:%M')} (America/Sao_Paulo)\n")
+    data = collect(z, atend, ini=ini, fim=fim)
     todo = [a for a in data if a["fase"] < 30]
     if desde is not None:
         if not dry:
@@ -647,9 +815,10 @@ def cmd_digitacao(z, atend, dry, desde=None):
         print(f"Nada a fazer: {sum(len(a['exames']) for a in data)} linha(s) já em Digitação (30)." if data else "Nenhuma linha encontrada.")
         return
     n = 0
-    for a in sorted(todo, key=lambda a: a["fase"]):
+    for a in sorted(todo, key=lambda a: (a["fase"], row_dt_prescr(a["row"]) or dt.datetime(1970, 1, 1, tzinfo=TZ))):
         steps = plan_sample(z, a, a["fase"])
-        print(f"\n== amostra {a['row']['NR_SEQ_AMOSTRA']} prescr {a['row']['NR_PRESCRICAO']} : {a['fase']} -> 30 ({len(steps)} requisições)")
+        print(f"\n== amostra {a['row']['NR_SEQ_AMOSTRA']} prescr {a['row']['NR_PRESCRICAO']}"
+              f" | {fmt_dt_prescr(a['row'])} : {a['fase']} -> 30 ({len(steps)} requisições)")
         for cur, nxt, path, body, writes in steps:
             n += 1
             tag = "GRAVA" if writes else "leitura"
@@ -2448,6 +2617,8 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
         fim = agora
 
     rows, total_srv = listar_liberados(z, ini, fim, atend=atend)
+    # Filtra também pela hora da solicitação (DT_PRESCRICAO) — o mesmo campo das listagens.
+    rows = filter_rows_by_prescr(sort_rows_by_prescr(rows), ini, fim)
     # agrupa por (atendimento, prescrição)
     grupos = {}
     for r in rows:
@@ -2460,7 +2631,8 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
         print("NÃO é lista de pendentes. Pendentes: use `fila`, `listar` ou `digitacao`.")
         print("Nada será digitado, salvo, aprovado nem liberado.")
         print("=" * 72)
-        print(f"Período: {ini.strftime('%d/%m/%Y %H:%M:%S')} → {fim.strftime('%d/%m/%Y %H:%M:%S')} (America/Sao_Paulo)")
+        print(f"Período (DT_PRESCRICAO): {ini.strftime('%d/%m/%Y %H:%M:%S')} → "
+              f"{fim.strftime('%d/%m/%Y %H:%M:%S')} (America/Sao_Paulo)")
         if atend:
             print(f"Filtro atendimento: {atend}")
         print(f"Amostras liberadas listadas: {len(rows)} (servidor qtTotal={total_srv}); "
@@ -2474,14 +2646,21 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
     n_ignorados = 0
     exames_com_achado = set()
 
-    for (at_i, nr), g in sorted(grupos.items(), key=lambda x: (x[0][0] or 0, x[0][1] or 0)):
+    def _grupo_key(item):
+        (at_i, nr), g = item
+        d = row_dt_prescr(g["row"]) or dt.datetime(1970, 1, 1, tzinfo=TZ)
+        return (d, at_i or 0, nr or 0)
+
+    for (at_i, nr), g in sorted(grupos.items(), key=_grupo_key):
         row = g["row"]
         paciente = row.get("NM_PESSOA_FISICA") or ""
         ds_idade = row.get("DS_IDADE")
         idade = _idade_anos(row.get("DT_NASCIMENTO"), agora)
         is_rn = _is_rn(idade, ds_idade, paciente)
+        dt_p = fmt_dt_prescr(row)
+        dt_p_iso = row_dt_prescr(row).isoformat() if row_dt_prescr(row) else None
         if not as_json:
-            print(f"== AT {at_i} | presc {nr} | {paciente}"
+            print(f"== AT {at_i} | presc {nr} | {dt_p} | {paciente}"
                   f" | idade {ds_idade or (str(round(idade, 1)) + 'a' if idade is not None else '?')}"
                   f" | {row.get('DS_SETOR_ATUAL') or ''}")
 
@@ -2514,7 +2693,8 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
                 if not as_json:
                     print(f"   {exame_label}: fora da árvore")
                 sem.append({"paciente": paciente, "atendimento": at_i,
-                            "prescricao": nr, "exame": exame_label})
+                            "prescricao": nr, "exame": exame_label,
+                            "dt_prescricao": dt_p, "dt_prescricao_iso": dt_p_iso})
                 n_exames += 1
                 continue
 
@@ -2543,11 +2723,16 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
                 idade = idade_n
                 is_rn = _is_rn(idade, ds_idade, paciente)
             meta = {"paciente": paciente, "atend": at_i, "presc": nr,
-                    "exame": exame_label, "cd": cd, "idade": idade, "is_rn": is_rn}
+                    "exame": exame_label, "cd": cd, "idade": idade, "is_rn": is_rn,
+                    "dt_prescricao": dt_p, "dt_prescricao_iso": dt_p_iso}
             n_campos += _analisar_vo(vo, meta, achados)
+            for a in achados[antes:]:
+                a["dt_prescricao"] = dt_p
+                a["dt_prescricao_iso"] = dt_p_iso
             if len(achados) == antes:
                 sem.append({"paciente": paciente, "atendimento": at_i,
-                            "prescricao": nr, "exame": exame_label})
+                            "prescricao": nr, "exame": exame_label,
+                            "dt_prescricao": dt_p, "dt_prescricao_iso": dt_p_iso})
             else:
                 exames_com_achado.add((at_i, nr, exame_label))
             if not as_json:
@@ -2581,6 +2766,7 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
 
     if as_json:
         out = {
+            "campo_hora": "DT_PRESCRICAO",
             "periodo": {"de": ini.isoformat(), "ate": fim.isoformat()},
             "status": LIBERADO_STATUS,
             "totais": totais,
@@ -2599,7 +2785,8 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
         for a in lista:
             prov = f" | valor provável: {_fmt_val(a['valor_provavel'])}" if a.get("valor_provavel") is not None else ""
             uni = f" {a['unidade']}" if a.get("unidade") else ""
-            print(f"  • {a['paciente']} | AT {a['atendimento']} | presc {a['prescricao']}")
+            hp = a.get("dt_prescricao") or "?"
+            print(f"  • {a['paciente']} | AT {a['atendimento']} | presc {a['prescricao']} | {hp}")
             print(f"    exame: {a['exame']} | campo: {a['campo']} = {_fmt_val(a['valor'])}{uni}")
             print(f"    motivo: {a['motivo']}{prov}")
 
@@ -2608,7 +2795,8 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
     print(f"\n## Sem achados ({len(sem)} exame(s))")
     if sem:
         for s in sem:
-            print(f"  • {s['paciente']} | AT {s['atendimento']} | presc {s['prescricao']} | {s['exame']}")
+            hp = s.get("dt_prescricao") or "?"
+            print(f"  • {s['paciente']} | AT {s['atendimento']} | presc {s['prescricao']} | {hp} | {s['exame']}")
     else:
         print("  (nenhum)")
 
@@ -2641,10 +2829,18 @@ def main():
     fl.add_argument("--status", type=int, choices=[10, 20, 25, 26, 30], help="só esta etapa")
     fl.add_argument("--exames", action="store_true", help="lista também amostras e exames de cada atendimento")
     fl.add_argument("--resumo", action="store_true", help="só as contagens")
+    fl.add_argument("--de", help="início DT_PRESCRICAO DD/MM/AAAA[ HH:MM] (padrão: há 4 dias 00:00)")
+    fl.add_argument("--ate", help="fim DT_PRESCRICAO DD/MM/AAAA[ HH:MM] (padrão: hoje 23:59)")
+    fl.add_argument("--json", dest="as_json", action="store_true", help="saída JSON (inclui dt_prescricao)")
     l = sp.add_parser("listar"); l.add_argument("atendimento", type=int)
+    l.add_argument("--de", help="início DT_PRESCRICAO DD/MM/AAAA[ HH:MM]")
+    l.add_argument("--ate", help="fim DT_PRESCRICAO DD/MM/AAAA[ HH:MM]")
+    l.add_argument("--json", dest="as_json", action="store_true", help="saída JSON (inclui dt_prescricao)")
     d = sp.add_parser("digitacao"); d.add_argument("atendimento", type=int)
     d.add_argument("--dry-run", action="store_true")
     d.add_argument("--desde", type=int, choices=[10, 20, 25, 26], help="(só dry-run) simula a partir deste status")
+    d.add_argument("--de", help="início DT_PRESCRICAO DD/MM/AAAA[ HH:MM]")
+    d.add_argument("--ate", help="fim DT_PRESCRICAO DD/MM/AAAA[ HH:MM]")
     le = sp.add_parser("ler"); le.add_argument("atendimento", type=int)
     r = sp.add_parser("resultado"); r.add_argument("atendimento", type=int)
     r.add_argument("--exame", action="append", required=True, help="SIGLA=valor ou SIGLA.campo=valor, ex.: TGO=20.7, BILI.total=0.64")
@@ -2663,8 +2859,8 @@ def main():
     hm.add_argument("--dump-payload", help="grava o payload do save neste arquivo")
     cf = sp.add_parser("conferir",
                        help="só leitura: audita TODOS os exames liberados (status 40) do período")
-    cf.add_argument("--de", help="início DD/MM/AAAA[ HH:MM] (padrão: hoje 00:00:00)")
-    cf.add_argument("--ate", help="fim DD/MM/AAAA[ HH:MM] (padrão: agora)")
+    cf.add_argument("--de", help="início DT_PRESCRICAO DD/MM/AAAA[ HH:MM] (padrão: hoje 00:00:00)")
+    cf.add_argument("--ate", help="fim DT_PRESCRICAO DD/MM/AAAA[ HH:MM] (padrão: agora)")
     cf.add_argument("--at", dest="atendimento", type=int, help="filtra um atendimento")
     cf.add_argument("--json", dest="as_json", action="store_true", help="saída JSON")
     a = ap.parse_args()
@@ -2695,11 +2891,11 @@ def main():
     if a.cmd == "login":
         z.login(force_prompt=True, save_creds=True)
     elif a.cmd == "fila":
-        cmd_fila(z, a.status, a.exames, a.resumo)
+        cmd_fila(z, a.status, a.exames, a.resumo, a.de, a.ate, a.as_json)
     elif a.cmd == "listar":
-        cmd_listar(z, a.atendimento)
+        cmd_listar(z, a.atendimento, a.de, a.ate, a.as_json)
     elif a.cmd == "digitacao":
-        cmd_digitacao(z, a.atendimento, a.dry_run, a.desde)
+        cmd_digitacao(z, a.atendimento, a.dry_run, a.desde, a.de, a.ate)
     elif a.cmd == "ler":
         cmd_ler(z, a.atendimento)
     elif a.cmd == "resultado":

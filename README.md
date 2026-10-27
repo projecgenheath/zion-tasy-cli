@@ -70,18 +70,29 @@ Mostra só o usuário salvo (nunca a senha).
 python3 zion.py whoami
 ```
 
-### `listar AT`
-**Pendentes do atendimento** (não é conferência). Mostra paciente, setor, leito e os exames por fase/status.
+### `fila [--status N] [--exames] [--resumo] [--de] [--ate] [--json]`
+**Pendentes por etapa** (não é conferência), sem número de atendimento. Cada linha mostra a **hora exata da solicitação** (`DT_PRESCRICAO`, formato `dd/mm/aaaa HH:MM`, fuso America/Sao_Paulo). Ordena por essa hora. `--de` / `--ate` filtram por `DT_PRESCRICAO` (aceitam `DD/MM/AAAA` ou `DD/MM/AAAA HH:MM`). Sem essas opções: últimos 4 dias. `--json` inclui `dt_prescricao` / `dt_prescricao_iso`.
 ```bash
-python3 zion.py listar 123456
+python3 zion.py fila --resumo
+python3 zion.py fila --status 30 --exames
+python3 zion.py fila --de "27/10/2026 08:00" --ate "27/10/2026 12:00"
+python3 zion.py fila --status 30 --json
 ```
 
-### `digitacao AT [--dry-run] [--desde STATUS]`
-**Pendentes → Digitação** (não é conferência). Leva os exames do atendimento até **Digitação do Resultado** (status 30), passando pelas fases intermediárias (10 Pendente coleta → 20 Material Coletado → 25 Em Análise → 26 Interfaceamento → 30).
+### `listar AT [--de] [--ate] [--json]`
+**Pendentes do atendimento** (não é conferência). Mostra paciente, setor, leito e os exames por fase/status, com a hora da solicitação (`DT_PRESCRICAO`) em cada amostra. `--de` / `--ate` / `--json` iguais aos da `fila`.
+```bash
+python3 zion.py listar 123456
+python3 zion.py listar 123456 --de "27/10/2026" --ate "27/10/2026 12:00"
+```
+
+### `digitacao AT [--dry-run] [--desde STATUS] [--de] [--ate]`
+**Pendentes → Digitação** (não é conferência). Leva os exames do atendimento até **Digitação do Resultado** (status 30), passando pelas fases intermediárias (10 Pendente coleta → 20 Material Coletado → 25 Em Análise → 26 Interfaceamento → 30). Filtra por `DT_PRESCRICAO` com `--de` / `--ate` (padrão: últimos 4 dias).
 Quando o sistema responde `IE_GERAR_AMOSTRA=S`, o CLI segue a mesma sequência que o navegador faz (sem gerar amostra nova). Qualquer outra resposta não mapeada faz o CLI **parar**.
 ```bash
 python3 zion.py digitacao 123456 --dry-run
 python3 zion.py digitacao 123456
+python3 zion.py digitacao 123456 --de "27/10/2026 08:00" --ate "27/10/2026 12:00" --dry-run
 ```
 
 ### `ler AT`
@@ -100,7 +111,7 @@ python3 zion.py ler 123456
 **Não misture.** `conferir` ignora qualquer exame da mesma prescrição que ainda não esteja em status 40 (ex.: HCV/HBsAg em Digitação). Quem confere **não digita nem altera nada**.
 
 ### `conferir [--de DD/MM/AAAA[ HH:MM]] [--ate ...] [--at AT] [--json]`
-**Só leitura.** Lista absolutamente todos os exames com status **Exame Liberado** (40) no período (padrão: hoje 00:00 → agora), abre cada prescrição, lê **somente** os campos dos exames em status 40 (ignora pendentes da mesma presc) e classifica achados em:
+**Só leitura.** Lista absolutamente todos os exames com status **Exame Liberado** (40) no período (padrão: hoje 00:00 → agora). O período e a hora mostrada em cada linha usam **`DT_PRESCRICAO`** (hora da solicitação, `dd/mm/aaaa HH:MM`, America/Sao_Paulo); `--json` inclui `dt_prescricao` / `dt_prescricao_iso` e `campo_hora`. Abre cada prescrição, lê **somente** os campos dos exames em status 40 (ignora pendentes da mesma presc) e classifica achados em:
 
 - **Possível erro de digitação** — escala ×10/×100/×1000, pares de sedimento EAS inconsistentes, leucograma ≠ 100%, Ht/Hb/CHCM/VCM incoerentes, BD > BT, pH sanguíneo fora de 6,8–7,8, campo principal zerado, conclusão vs valor (Beta HCG), eTFG vazia com creatinina e idade > 12, heurística “> 10× referência”.
 - **Resultado crítico** — valores de pânico (Hb < 7; PLT < 50 mil ou > 1 milhão; leucócitos totais < 2 mil ou > 30 mil; K < 2,8 ou > 6,2; Na < 120 ou > 160; iCa < 0,8 ou > 1,6; glicose < 50 ou > 400; creatinina > 5 adulto; BT > 15 em RN; pH < 7,20 ou > 7,60; pCO₂ < 20 ou > 70; lactato > 4; RNI > 4; sorologias reagentes).
@@ -108,7 +119,8 @@ python3 zion.py ler 123456
 Limites ficam em tabelas editáveis no código (`PLAUS_BOUNDS`, `CRITICO_BOUNDS`). **Nunca** salva, aprova nem libera. Informe no relatório os totais de prescrições/exames/campos conferidos.
 ```bash
 python3 zion.py conferir
-python3 zion.py conferir --de 27/10/2026 --ate 27/10/2026 23:59
+python3 zion.py conferir --de "27/10/2026" --ate "27/10/2026 23:59"
+python3 zion.py conferir --de "27/10/2026 08:00" --ate "27/10/2026 12:00"
 python3 zion.py conferir --at 123456
 python3 zion.py conferir --json
 ```
