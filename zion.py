@@ -235,7 +235,9 @@ SESSION_FILE = session_path()
 TPL = json.load(open(os.path.join(HERE, "templates.json"), encoding="utf-8"))
 TZ = dt.timezone(dt.timedelta(hours=-3))
 STATUS = {10: "Prescrições / Pendente coleta", 20: "Material Coletado", 25: "Em Análise",
-          26: "Interfaceamento/Fase Analítica", 30: "Digitação do Resultado"}
+          26: "Interfaceamento/Fase Analítica", 30: "Digitação do Resultado",
+          35: "Resultado Aprovado (Laudado)", 40: "Exame Liberado", 45: "Entrega do exame"}
+LIBERADO_STATUS = 40  # Exame Liberado (pós-analítica, IE_RESULT_STAGES)
 # fase -> (master, child, campo de etapa)
 PHASES = {
     10: ("428260_master", "428461_child", "IE_COLLECT_STAGES", "Pré-analítica"),
@@ -1592,6 +1594,756 @@ def cmd_hemo(z, atend, a, dry, forcar, dump=None):
         if avisos: print("     avisos de referência: " + "; ".join(avisos))
 
 
+# ---------------- Conferir exames liberados (só leitura) ----------------
+# Status 40 = Exame Liberado. Nunca salva, aprova nem altera nada.
+# Tabelas PLAUS_* e CRITICO_* são editáveis (limites de referência do laboratório).
+
+def parse_dt_arg(txt, fim_do_dia=False):
+    """Aceita DD/MM/AAAA, DD/MM/AAAA HH:MM ou DD/MM/AAAA HH:MM:SS (fuso America/Sao_Paulo)."""
+    t = (txt or "").strip()
+    for fmt in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y"):
+        try:
+            d = dt.datetime.strptime(t, fmt)
+            break
+        except ValueError:
+            d = None
+    if d is None:
+        raise ValueError(f"data inválida: {txt!r} (use DD/MM/AAAA[ HH:MM[:SS]])")
+    if fmt == "%d/%m/%Y" and fim_do_dia:
+        d = d.replace(hour=23, minute=59, second=59)
+    return d.replace(tzinfo=TZ)
+
+
+def instant_of(dtime):
+    return {"@class": "java.time.Instant", "type": "INSTANT",
+            "value": dtime.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")}
+
+
+def liberado_master_body(ini, fim, atend=None, page=1, rpp=200):
+    """Réplica do filtro Exames Pendentes > Pós-analítica > Status = Exame Liberado."""
+    b = copy.deepcopy(TPL["498026_master"])
+    st = LIBERADO_STATUS
+    ini_i, fim_i = instant_of(ini), instant_of(fim)
+    p = b["parameters"]
+    p["DT_INICIAL"], p["DT_FINAL"] = copy.deepcopy(ini_i), copy.deepcopy(fim_i)
+    p["IE_RESULT_STAGES"] = st
+    p["IE_STATUS_ATEND"] = st
+    p["NR_ATENDIMENTO"] = atend
+    if "filterValues" in b:
+        fv = b["filterValues"]
+        fv["DT_INICIAL"], fv["DT_FINAL"] = copy.deepcopy(ini_i), copy.deepcopy(fim_i)
+        fv["IE_RESULT_STAGES"] = st
+        fv["NR_ATENDIMENTO"] = atend
+    b["page"], b["pageBegin"], b["recordsPerPage"] = page, page, rpp
+    return b
+
+
+def liberado_child_body(ini, fim, row, atend=None):
+    b = copy.deepcopy(TPL["691864_child"])
+    st = LIBERADO_STATUS
+    ini_i, fim_i = instant_of(ini), instant_of(fim)
+    p = b["parameters"]
+    pf = p["PARENT_FILTER_PARAMS"]
+    pf["DT_INICIAL"], pf["DT_FINAL"] = copy.deepcopy(ini_i), copy.deepcopy(fim_i)
+    pf["IE_RESULT_STAGES"] = st
+    pf["NR_ATENDIMENTO"] = atend
+    p["IE_STATUS_ATEND"] = st
+    p["DT_INICIAL"], p["DT_FINAL"] = copy.deepcopy(ini_i), copy.deepcopy(fim_i)
+    p["PENDING_PRESCRIPTION_VALUES"] = {k: to_request_value(v) for k, v in row.items()}
+    return b
+
+
+def listar_liberados(z, ini, fim, atend=None, rpp=200):
+    """Lista TODAS as amostras liberadas do período (pagina até esgotar qtTotalRegistros)."""
+    rows, page, total = [], 1, None
+    while True:
+        body = liberado_master_body(ini, fim, atend=atend, page=page, rpp=rpp)
+        raw = z.post("WCPanelDataProvider/getDataSource", [body]) or {}
+        dados = raw.get("dados") or {}
+        chunk = dados.get("linhasResultSet") or []
+        if total is None:
+            total = int(dados.get("qtTotalRegistros") or 0)
+        rows.extend(chunk)
+        if not chunk or len(rows) >= total:
+            break
+        page += 1
+        if page > 200:
+            raise RuntimeError(f"paginação liberados excedeu 200 páginas ({len(rows)}/{total})")
+    return rows, total if total is not None else len(rows)
+
+
+# --- Tabelas editáveis de plausibilidade e crítico ---
+# Chave = slug do nmExame / CD_EXAME. Bounds: (min_plaus, max_plaus) — fora = possível digitação.
+# Unidades usuais do lab HMMCC (Hb g/dL, PLT /mm³ gravado, WBC totais /mm³, K mmol/L, ...).
+PLAUS_BOUNDS = {
+    # hematologia
+    "hemoglobina": (2.0, 25.0), "hgb": (2.0, 25.0), "hb": (2.0, 25.0),
+    "hematocrito": (5.0, 75.0), "hct": (5.0, 75.0),
+    "hemacias": (0.5, 9.0), "rbc": (0.5, 9.0),  # ×10^6/µL
+    "vcm": (40.0, 150.0), "hcm": (10.0, 50.0), "chcm": (20.0, 45.0), "rdw": (5.0, 40.0), "vpm": (3.0, 20.0),
+    "plaquetas": (1_000.0, 2_000_000.0), "plt": (1_000.0, 2_000_000.0),
+    # "Leucócitos" do HC (10³/µL) vs "Leucócitos Totais" (/mm³) vs EAS piócitos (campo simples)
+    "leucocitos": (0.1, 200.0), "wbc": (0.1, 200.0),
+    "leucocitostotais": (100.0, 200_000.0),
+    "leucocitospiocitos": (0.0, 500.0),  # campo simples do EAS
+    "leucocitosx1000": (0.0, 500_000.0),
+    "celulasepiteliais": (0.0, 500.0), "celulasepiteliaisx1000": (0.0, 500_000.0),
+    "hemaciasx1000": (0.0, 500_000.0),
+    "hemaciasedimento": (0.0, 500.0),  # EAS simples (evita bound de RBC sanguíneo)
+    "phurina": (4.5, 9.0), "ph": (6.5, 8.0),  # ph urina sobrescrito no analisador se URN1
+    # bioquímica
+    "potassio": (1.0, 10.0), "k": (1.0, 10.0),
+    "sodio": (90.0, 180.0), "na": (90.0, 180.0),
+    "calcioionico": (0.3, 2.5), "cai": (0.3, 2.5), "caio": (0.3, 2.5),
+    "glicose": (10.0, 800.0), "glicemia": (10.0, 800.0),
+    "creatinina": (0.05, 30.0), "crea": (0.05, 30.0),
+    "ureia": (2.0, 500.0), "urea": (2.0, 500.0),
+    "bilirrubinatotal": (0.01, 40.0), "bilirrubinadireta": (0.0, 30.0), "bilirrubinaindireta": (0.0, 40.0),
+    "tgo": (1.0, 5000.0), "tgp": (1.0, 5000.0), "ast": (1.0, 5000.0), "alt": (1.0, 5000.0),
+    "pcr": (0.0, 500.0), "pcrp": (0.0, 500.0),
+    "lactato": (0.1, 30.0), "lac": (0.1, 30.0),
+    # gasometria
+    "ph": (6.5, 8.0), "pco2": (5.0, 150.0), "po2": (10.0, 700.0),
+    "hco3": (1.0, 60.0), "be": (-40.0, 40.0), "so2": (10.0, 100.0),
+    # coagulação
+    "rni": (0.5, 20.0), "inr": (0.5, 20.0), "tap": (5.0, 200.0), "tempo": (5.0, 200.0),
+    "atividade": (1.0, 200.0), "ttpa": (5.0, 300.0),
+    # outros
+    "contagemdereticulocitos": (0.0, 50.0), "reticulocitos": (0.0, 50.0),
+}
+
+# Resultado crítico (plausível, mas pânico). (min_ok, max_ok) — fora = crítico.
+# None em um lado = sem limite naquela ponta.
+CRITICO_BOUNDS = {
+    "hemoglobina": (7.0, None), "hgb": (7.0, None), "hb": (7.0, None),
+    "plaquetas": (50_000.0, 1_000_000.0), "plt": (50_000.0, 1_000_000.0),
+    "leucocitostotais": (2_000.0, 30_000.0),
+    "leucocitos": (2.0, 30.0), "wbc": (2.0, 30.0),  # campo HC em 10³/µL
+    "potassio": (2.8, 6.2), "k": (2.8, 6.2),
+    "sodio": (120.0, 160.0), "na": (120.0, 160.0),
+    "calcioionico": (0.8, 1.6), "cai": (0.8, 1.6), "caio": (0.8, 1.6),
+    "glicose": (50.0, 400.0), "glicemia": (50.0, 400.0),
+    "creatinina": (None, 5.0), "crea": (None, 5.0),  # adulto; RN tratado à parte
+    "bilirrubinatotal": (None, 15.0),  # RN: >15 crítico
+    "ph": (7.20, 7.60),
+    "pco2": (20.0, 70.0),
+    "lactato": (None, 4.0), "lac": (None, 4.0),
+    "rni": (None, 4.0), "inr": (None, 4.0),
+}
+
+# Sorologias reagentes = crítico
+SOROLOGIA_REAGENTE_SLUGS = (
+    "hiv", "anti hiv", "trhiv", "sifilis", "vdrl", "fta", "hbsag", "antihbs", "hcv",
+    "antihcv", "toxo", "toxoplasmose", "igm",
+)
+
+
+def _num_or_none(v):
+    if v is None or v == "":
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(str(v).strip().replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _idade_anos(dt_nasc, agora=None):
+    if not dt_nasc:
+        return None
+    if isinstance(dt_nasc, dict):
+        val = dt_nasc.get("value") or ""
+        try:
+            nasc = dt.datetime.fromisoformat(val.replace("Z", "+00:00")).astimezone(TZ).date()
+        except ValueError:
+            return None
+    elif isinstance(dt_nasc, str):
+        try:
+            nasc = dt.datetime.fromisoformat(dt_nasc.replace("Z", "+00:00")).astimezone(TZ).date()
+        except ValueError:
+            return None
+    else:
+        return None
+    hoje = (agora or dt.datetime.now(TZ)).date()
+    return (hoje - nasc).days / 365.25
+
+
+def _is_rn(idade_anos, ds_idade=None, nome=None):
+    if idade_anos is not None and idade_anos < 28 / 365.25:
+        return True
+    blob = " ".join(str(x or "") for x in (ds_idade, nome)).lower()
+    return blob.startswith("rn ") or "rn de " in blob or "recem" in _slug(blob) or "recém" in blob
+
+
+def _campo_keys(nm, cd=None, exame_cd=None):
+    """Chaves de classificação a partir do nmExame (NÃO herdar bounds do CD do exame pai)."""
+    keys = []
+    if nm:
+        keys.append(_slug(nm))
+    alias_map = {
+        "k+": "potassio", "na+": "sodio", "cai": "calcioionico", "caio": "calcioionico",
+        "hgb": "hemoglobina", "hb": "hemoglobina", "hct": "hematocrito",
+        "plt": "plaquetas", "wbc": "leucocitos", "crea": "creatinina", "urea": "ureia",
+        "pcrp": "pcr", "lact": "lactato", "lac": "lactato",
+        "inr": "rni", "ast": "tgo", "alt": "tgp",
+    }
+    out = []
+    for k in keys:
+        out.append(k)
+        if k in alias_map:
+            out.append(alias_map[k])
+    s = keys[0] if keys else ""
+    # matches específicos (ordem: mais específico primeiro)
+    specific = [
+        ("leucocitosx1000", ("leucocitosx1000", "piocitosx1000")),
+        ("leucocitospiocitos", ("leucocitospiocitos", "piocitos")),
+        ("leucocitostotais", ("leucocitostotais", "leucocitototal")),
+        ("celulasepiteliaisx1000", ("celulasepiteliaisx1000",)),
+        ("celulasepiteliais", ("celulasepiteliais",)),
+        ("hemaciasx1000", ("hemaciasx1000",)),
+        ("bilirrubinatotal", ("bilirrubinatotal",)),
+        ("bilirrubinadireta", ("bilirrubinadireta",)),
+        ("bilirrubinaindireta", ("bilirrubinaindireta",)),
+        ("calcioionico", ("calcioionico", "calcioionizado")),
+        ("contagemdereticulocitos", ("contagemdereticulocitos", "reticulocitos")),
+        ("plaquetas", ("plaquetas", "plt")),
+        ("hemoglobina", ("hemoglobina",)),
+        ("hematocrito", ("hematocrito",)),
+        ("creatinina", ("creatinina",)),
+        ("potassio", ("potassio",)),
+        ("sodio", ("sodio",)),
+        ("glicose", ("glicose", "glicemia")),
+        ("ureia", ("ureia",)),
+        ("lactato", ("lactato",)),
+        ("pco2", ("pco2",)),
+        ("po2", ("po2",)),
+        ("hco3", ("hco3",)),
+        ("rni", ("rni", "inr")),
+    ]
+    for canon, needles in specific:
+        if any(n == s or s.startswith(n) or n in s for n in needles):
+            if canon not in out:
+                out.append(canon)
+    # Leucócitos "simples" do HC (não totais, não piócitos, não x1000)
+    if "leucocito" in s and "totai" not in s and "total" not in s and "piocito" not in s and "x1000" not in s:
+        if "leucocitos" not in out:
+            out.append("leucocitos")
+    # Hemácias: sangue (RBC) vs sedimento EAS
+    if s == "hemacias" or (s.startswith("hemacias") and "x1000" not in s):
+        # se o exame é EAS/URN1, tratar como sedimento
+        ex = _slug(exame_cd or "")
+        if ex in ("urn1", "eas", "urina") or "urina" in ex:
+            out = [k for k in out if k not in ("hemacias", "rbc")]
+            out.append("hemaciasedimento")
+        else:
+            if "hemacias" not in out:
+                out.append("hemacias")
+    # pH urinário
+    if s == "ph" or s.startswith("ph"):
+        ex = _slug(exame_cd or "")
+        if ex in ("urn1", "eas") or "urina" in ex:
+            out = [k for k in out if k != "ph"]
+            out.append("phurina")
+        elif "ph" not in out:
+            out.append("ph")
+    # não classificar idade / eTFG / observação como creatinina etc.
+    if s.startswith("idade") or "etfg" in s or "filtracaoglomerular" in s or s.startswith("observ"):
+        return [s]
+    return out
+
+
+def _lookup_bound(table, keys):
+    for k in keys:
+        if k in table:
+            return table[k], k
+    return None, None
+
+
+def _provavel_escala(v, lo, hi):
+    """Sugere valor ÷10/100/1000 se cair na faixa plausível."""
+    if v is None:
+        return None
+    for f in (10, 100, 1000, 10000):
+        c = v / f
+        if (lo is None or c >= lo) and (hi is None or c <= hi):
+            return c
+    for f in (10, 100, 1000):
+        c = v * f
+        if (lo is None or c >= lo) and (hi is None or c <= hi):
+            return c
+    return None
+
+
+def _fmt_val(v):
+    if v is None:
+        return "-"
+    if isinstance(v, float):
+        if abs(v) >= 1000 and abs(v - round(v)) < 1e-9:
+            return f"{int(round(v)):,}".replace(",", ".")
+        s = f"{v:.6f}".rstrip("0").rstrip(".")
+        return s.replace(".", ",")
+    return str(v)
+
+
+def _achado(tipo, paciente, atend, presc, exame, campo, valor, motivo, provavel=None, unidade=""):
+    return {
+        "tipo": tipo,
+        "paciente": paciente or "",
+        "atendimento": atend,
+        "prescricao": presc,
+        "exame": exame or "",
+        "campo": campo or "",
+        "valor": valor,
+        "unidade": unidade or "",
+        "motivo": motivo,
+        "valor_provavel": provavel,
+    }
+
+
+def _analisar_vo(vo, meta, achados):
+    """Classifica campos de um ResultVO. meta: paciente, atend, presc, exame, idade, is_rn."""
+    paciente, atend, presc, exame = meta["paciente"], meta["atend"], meta["presc"], meta["exame"]
+    idade, is_rn = meta.get("idade"), meta.get("is_rn")
+    subs = list(vo.get("subExams") or [])
+    by_slug = {_slug(x.get("nmExame")): x for x in subs}
+    nums = {}  # slug -> float
+    campos_lidos = 0
+
+    for x in subs:
+        campos_lidos += 1
+        nm = (x.get("nmExame") or "").strip()
+        if not nm or nm.lower().startswith("observ"):
+            continue
+        slug = _slug(nm)
+        fmt = x.get("ieFormatoResultado")
+        unidade = x.get("dsUnidadeMedida") or ""
+        keys = _campo_keys(nm, exame_cd=meta.get("cd"))
+        # ignora campos administrativos
+        if slug.startswith("idade") or slug.startswith("observ"):
+            nums[slug] = _num_or_none(x.get("qtResultado")) if fmt in ("V", "DV") else None
+            continue
+
+        if fmt in ("V", "DV"):
+            v = _num_or_none(x.get("qtResultado"))
+            nums[slug] = v
+            if v is None:
+                continue
+            pr_min = _num_or_none(x.get("prMinimo") if x.get("prMinimo") is not None else x.get("qtMinima"))
+            pr_max = _num_or_none(x.get("prMaximo") if x.get("prMaximo") is not None else x.get("qtMaxima"))
+
+            is_plt = any(k in ("plaquetas", "plt") for k in keys)
+            is_etfg = "etfg" in slug or "filtracaoglomerular" in slug
+            # 1) heurística 10× referência (pula quando ref e valor estão em escalas diferentes, ex. PLT)
+            skip_10x = is_plt or is_etfg or (pr_max is not None and pr_max < 1000 and v >= 1000)
+            if not skip_10x and pr_max is not None and v > 10 * pr_max and pr_max > 0:
+                prov = _provavel_escala(v, pr_min, pr_max)
+                achados.append(_achado("digitacao", paciente, atend, presc, exame, nm, v,
+                    f"valor {_fmt_val(v)} > 10× limite superior de referência ({_fmt_val(pr_max)})",
+                    provavel=prov, unidade=unidade))
+                continue
+            if not skip_10x and pr_min is not None and pr_min > 0 and v < pr_min / 10:
+                prov = _provavel_escala(v, pr_min, pr_max)
+                achados.append(_achado("digitacao", paciente, atend, presc, exame, nm, v,
+                    f"valor {_fmt_val(v)} < referência mínima/10 ({_fmt_val(pr_min)})",
+                    provavel=prov, unidade=unidade))
+                continue
+
+            # 2) bounds de plausibilidade
+            bound, bk = _lookup_bound(PLAUS_BOUNDS, keys)
+            if bound:
+                lo, hi = bound
+                if (lo is not None and v < lo) or (hi is not None and v > hi):
+                    prov = _provavel_escala(v, lo, hi)
+                    achados.append(_achado("digitacao", paciente, atend, presc, exame, nm, v,
+                        f"fora da faixa fisiológica plausível ({_fmt_val(lo)}–{_fmt_val(hi)}) para {bk}",
+                        provavel=prov, unidade=unidade))
+                    continue
+
+            # 3) crítico (só se ainda plausível; nunca aplicar bound de crea em eTFG)
+            crit, ck = _lookup_bound(CRITICO_BOUNDS, keys)
+            if crit and not is_etfg:
+                clo, chi = crit
+                aplicar = True
+                if ck in ("creatinina", "crea") and is_rn:
+                    aplicar = False
+                if aplicar:
+                    abaixo = clo is not None and v < clo
+                    acima = chi is not None and v > chi
+                    if abaixo or acima:
+                        lado = "abaixo" if abaixo else "acima"
+                        lim = clo if abaixo else chi
+                        achados.append(_achado("critico", paciente, atend, presc, exame, nm, v,
+                            f"resultado crítico ({lado} de {_fmt_val(lim)})", unidade=unidade))
+                        continue
+
+            # WBC (10³/µL) digitado em escala absurda (milhões) — nunca aplicar a Leucócitos Totais
+            if ("leucocitos" in keys or "wbc" in keys) and "leucocitostotais" not in keys                     and "piocito" not in slug and "x1000" not in slug and "totai" not in slug:
+                if v > 200:
+                    prov = _provavel_escala(v, 0.1, 200)
+                    achados.append(_achado("digitacao", paciente, atend, presc, exame, nm, v,
+                        "leucócitos em escala incompatível (esperado ~10³/µL)",
+                        provavel=prov, unidade=unidade))
+
+        else:
+            # texto / lista
+            ds = (x.get("dsResultado") or "").strip()
+            # sorologia reagente
+            if ds and _slug(ds) in ("reagente", "positivo", "reativo", "detectado", "reag"):
+                if any(any(s.replace(" ", "") in k for s in SOROLOGIA_REAGENTE_SLUGS) for k in keys) \
+                   or any(s.replace(" ", "") in slug for s in SOROLOGIA_REAGENTE_SLUGS):
+                    achados.append(_achado("critico", paciente, atend, presc, exame, nm, ds,
+                        "sorologia/teste reagente ou positivo"))
+
+    # ---- inconsistências internas ----
+    def g(*cands):
+        for c in cands:
+            if c in nums and nums[c] is not None:
+                return nums[c]
+        for s, v in nums.items():
+            if v is None:
+                continue
+            # match exato ou slug que É o cand / começa com cand (não "crea" ⊆ "creativa")
+            for c in cands:
+                if s == c or s.startswith(c) or s.endswith(c):
+                    # evita creatina⊆creativa: exige fronteira mínima
+                    if c == "crea" and "creatinina" not in s and s != "crea":
+                        continue
+                    return v
+        return None
+
+    # leucograma %
+    pct_keys = [s for s, v in nums.items() if v is not None and (
+        s.endswith("pct") or s in ("bastonetes", "segmentados", "neutrofilos", "linfocitos",
+                                   "monocitos", "eosinofilos", "basofilos") or
+        (s.endswith("") and any(x in s for x in ("bastonete", "segmentado", "neutrofilo",
+                                                  "linfocito", "monocito", "eosinofilo", "basofilo"))
+         and "abs" not in s and "absolut" not in s and "total" not in s))]
+    # Prefer explicit percentuais do HC
+    pct_vals = []
+    for s, v in nums.items():
+        if v is None:
+            continue
+        if s in ("bastonetes", "segmentados", "linfocitos", "monocitos", "eosinofilos", "basofilos"):
+            pct_vals.append((s, v))
+        elif s.endswith("porcentagem") or (s.endswith("") and "percent" in s):
+            pct_vals.append((s, v))
+    # HC: percentuais tipicamente 0–100 e somam ~100; absolutos são milhares
+    pct_only = [(s, v) for s, v in pct_vals if v <= 100]
+    if len(pct_only) >= 4:
+        soma = sum(v for _, v in pct_only)
+        if abs(soma - 100) > 1.5:
+            achados.append(_achado("digitacao", paciente, atend, presc, exame,
+                "Leucograma %", soma,
+                f"soma dos percentuais = {_fmt_val(soma)} (esperado ≈ 100)"))
+
+    hb = g("hemoglobina", "hgb", "hb")
+    ht = g("hematocrito", "hct")
+    rbc = g("hemacias", "rbc")
+    vcm = g("vcm")
+    chcm = g("chcm")
+    if hb is not None and ht is not None and hb > 0:
+        # Ht ≈ 3 × Hb (em g/dL e %)
+        esperado = 3 * hb
+        if esperado > 0 and abs(ht - esperado) / max(esperado, 1) > 0.25:
+            achados.append(_achado("digitacao", paciente, atend, presc, exame,
+                "Ht vs Hb", f"Hb={_fmt_val(hb)} Ht={_fmt_val(ht)}",
+                f"Ht diverge de 3×Hb em >25% (esperado ≈ {_fmt_val(esperado)})"))
+        if ht > 0:
+            chcm_calc = hb / ht * 100
+            if chcm is not None and abs(chcm - chcm_calc) > 2.5:
+                achados.append(_achado("digitacao", paciente, atend, presc, exame,
+                    "CHCM", chcm,
+                    f"CHCM informado {_fmt_val(chcm)} ≠ Hb/Ht×100 ({_fmt_val(chcm_calc)})"))
+    if ht is not None and rbc is not None and rbc > 0 and vcm is not None:
+        vcm_calc = ht / rbc * 10
+        if abs(vcm - vcm_calc) > 8:
+            achados.append(_achado("digitacao", paciente, atend, presc, exame,
+                "VCM", vcm,
+                f"VCM informado {_fmt_val(vcm)} ≠ Ht/RBC×10 ({_fmt_val(vcm_calc)})"))
+
+    bt = g("bilirrubinatotal")
+    bd = g("bilirrubinadireta")
+    bi = g("bilirrubinaindireta")
+    if bt is not None and bd is not None and bd > bt + 0.05:
+        achados.append(_achado("digitacao", paciente, atend, presc, exame,
+            "Bilirrubina Direta", bd,
+            f"BD ({_fmt_val(bd)}) > BT ({_fmt_val(bt)})"))
+    if bt is not None and bd is not None and bi is not None:
+        if abs(bi - (bt - bd)) > 0.15:
+            achados.append(_achado("digitacao", paciente, atend, presc, exame,
+                "Bilirrubina Indireta", bi,
+                f"BI ({_fmt_val(bi)}) ≠ BT−BD ({_fmt_val(bt - bd)})"))
+
+    # pH sanguíneo (gasometria); urina tem faixa própria (phurina) e não entra aqui
+    ex_cd = _slug(meta.get("cd") or "")
+    if ex_cd not in ("urn1", "eas") and "urina" not in ex_cd and "urin" not in _slug(exame):
+        ph = g("ph")
+        if ph is not None and (ph < 6.8 or ph > 7.8):
+            if not any(a["campo"] and _slug(a["campo"]) == "ph" and a["tipo"] == "digitacao"
+                       and a["prescricao"] == presc and a["exame"] == exame for a in achados):
+                achados.append(_achado("digitacao", paciente, atend, presc, exame,
+                    "pH", ph, f"pH fora de 6,8–7,8 ({_fmt_val(ph)})"))
+
+    # EAS sedimento pares
+    for simple_s, x1000_s, label in EAS_SED_PAIRS:
+        a, b = by_slug.get(simple_s), by_slug.get(x1000_s)
+        if not a or not b:
+            continue
+        va, vb = _num_or_none(a.get("qtResultado")), _num_or_none(b.get("qtResultado"))
+        if va is None and vb is None:
+            continue
+        if vb is not None and vb >= 1_000_000:
+            prov = vb / 1000 if va is None else va
+            achados.append(_achado("digitacao", paciente, atend, presc, exame,
+                label + " (x1000)", vb,
+                f"x1000 = {_fmt_val(vb)} (≥ 1.000.000) — provável escala errada (simples×1000 no campo x1000)",
+                provavel=va * 1000 if va is not None else vb / 1000))
+        elif va is not None and vb is not None:
+            esperado = va * 1000
+            if abs(vb - esperado) > max(1.0, 0.05 * esperado):
+                achados.append(_achado("digitacao", paciente, atend, presc, exame,
+                    label, f"{_fmt_val(va)} / x1000={_fmt_val(vb)}",
+                    f"par inconsistente: x1000 deveria ser {_fmt_val(esperado)} (simples×1000)"))
+
+    # TAP tempo 0 com AP%/RNI preenchidos
+    tempo = None
+    rni = g("rni", "inr")
+    ativ = None
+    for s, v in nums.items():
+        if v is None:
+            continue
+        if "tempo" in s and ("tap" in s or "protrombina" in s or s == "tempo"):
+            tempo = v
+        if "atividade" in s or s in ("ap", "atividadeprotrombinica"):
+            ativ = v
+    if tempo is not None and tempo == 0 and (rni not in (None, 0) or ativ not in (None, 0)):
+        achados.append(_achado("digitacao", paciente, atend, presc, exame,
+            "Tempo TAP", tempo,
+            f"tempo = 0 com RNI/atividade preenchidos (RNI={_fmt_val(rni)}, atividade={_fmt_val(ativ)})"))
+
+    # Beta HCG conclusão vs valor
+    hcg_val = None
+    hcg_conc = None
+    for x in subs:
+        slug = _slug(x.get("nmExame"))
+        if "betahcg" in slug or slug in ("hcg", "bhcg") or ("hcg" in slug and "obs" not in slug):
+            if x.get("ieFormatoResultado") in ("V", "DV"):
+                hcg_val = _num_or_none(x.get("qtResultado"))
+            else:
+                ds = (x.get("dsResultado") or "").strip()
+                if ds:
+                    hcg_conc = ds
+        if "conclus" in slug or "interpret" in slug or "resultado" == slug:
+            ds = (x.get("dsResultado") or "").strip()
+            if ds and hcg_conc is None and ("hcg" in _slug(exame) or "hcg" in slug):
+                hcg_conc = ds
+    if hcg_val is not None and hcg_conc:
+        reag = _slug(hcg_conc) in ("reagente", "positivo", "reativo")
+        nreag = _slug(hcg_conc) in ("naoreagente", "negativo", "naoagente", "nr")
+        if hcg_val > 25 and nreag:
+            achados.append(_achado("digitacao", paciente, atend, presc, exame,
+                "Beta HCG", f"{_fmt_val(hcg_val)} / {hcg_conc}",
+                "valor > 25 com conclusão NÃO REAGENTE"))
+        if hcg_val < 5 and reag:
+            achados.append(_achado("digitacao", paciente, atend, presc, exame,
+                "Beta HCG", f"{_fmt_val(hcg_val)} / {hcg_conc}",
+                "valor < 5 com conclusão REAGENTE"))
+
+    # eTFG vazia com creatinina e idade >12 (só no exame CREA)
+    crea = None
+    for s, v in nums.items():
+        if v is None:
+            continue
+        if s == "creatinina" or s.startswith("creatinina") or s == "dosagemdecreatinina":
+            crea = v
+            break
+    if crea is None:
+        for x in subs:
+            sx = _slug(x.get("nmExame"))
+            if sx == "creatinina" or (sx.startswith("creatinina") and "etfg" not in sx and "idade" not in sx):
+                crea = _num_or_none(x.get("qtResultado"))
+                if crea is not None:
+                    break
+    etfg = None
+    idade_campo = None
+    for s, v in nums.items():
+        if v is None:
+            continue
+        if "etfg" in s or "filtracaoglomerular" in s or "taxadefiltracao" in s:
+            etfg = v
+        if s.startswith("idade"):
+            idade_campo = v
+    for x in subs:
+        sx = _slug(x.get("nmExame"))
+        if "etfg" in sx or "filtracaoglomerular" in sx:
+            if etfg is None:
+                etfg = _num_or_none(x.get("qtResultado")) or _num_or_none(x.get("dsResultado"))
+        if sx.startswith("idade") and idade_campo is None:
+            idade_campo = _num_or_none(x.get("qtResultado")) or _num_or_none(x.get("dsResultado"))
+    # só faz sentido no painel de creatinina
+    exame_eh_crea = _slug(meta.get("cd") or "") in ("crea", "creatinina") or "creatinina" in _slug(exame)
+    idade_ref = idade_campo if idade_campo is not None else idade
+    if exame_eh_crea and crea not in (None, 0) and idade_ref is not None and idade_ref > 12:
+        if etfg in (None, 0):
+            achados.append(_achado("digitacao", paciente, atend, presc, exame,
+                "eTFG", etfg if etfg is not None else "",
+                f"eTFG vazia/0 com creatinina={_fmt_val(crea)} e idade={_fmt_val(idade_ref)} (>12 anos)"))
+
+    return campos_lidos
+
+
+def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
+    """Auditoria só-leitura de TODOS os exames liberados (status 40) do período."""
+    agora = dt.datetime.now(TZ)
+    if de:
+        ini = parse_dt_arg(de, fim_do_dia=False)
+        if " " not in de.strip():
+            ini = ini.replace(hour=0, minute=0, second=0)
+    else:
+        ini = dt.datetime.combine(agora.date(), dt.time(0, 0, 0), TZ)
+    if ate:
+        fim = parse_dt_arg(ate, fim_do_dia=True)
+    else:
+        fim = agora
+
+    rows, total_srv = listar_liberados(z, ini, fim, atend=atend)
+    # agrupa por (atendimento, prescrição)
+    grupos = {}
+    for r in rows:
+        key = (r.get("NR_ATENDIMENTO"), r.get("NR_PRESCRICAO"))
+        grupos.setdefault(key, {"row": r, "rows": []})["rows"].append(r)
+
+    if not as_json:
+        print(f"Conferência de exames liberados (status {LIBERADO_STATUS} = {STATUS[LIBERADO_STATUS]})")
+        print(f"Período: {ini.strftime('%d/%m/%Y %H:%M:%S')} → {fim.strftime('%d/%m/%Y %H:%M:%S')} (America/Sao_Paulo)")
+        if atend:
+            print(f"Filtro atendimento: {atend}")
+        print(f"Amostras na fila: {len(rows)} (servidor qtTotal={total_srv}); "
+              f"prescrições distintas: {len(grupos)}")
+        print("(somente leitura — nada será salvo/aprovado)\n")
+
+    achados = []
+    sem = []
+    n_exames = 0
+    n_campos = 0
+    exames_com_achado = set()
+
+    for (at_i, nr), g in sorted(grupos.items(), key=lambda x: (x[0][0] or 0, x[0][1] or 0)):
+        row = g["row"]
+        paciente = row.get("NM_PESSOA_FISICA") or ""
+        ds_idade = row.get("DS_IDADE")
+        idade = _idade_anos(row.get("DT_NASCIMENTO"), agora)
+        is_rn = _is_rn(idade, ds_idade, paciente)
+        if not as_json:
+            print(f"== AT {at_i} | presc {nr} | {paciente}"
+                  f" | idade {ds_idade or (str(round(idade, 1)) + 'a' if idade is not None else '?')}"
+                  f" | {row.get('DS_SETOR_ATUAL') or ''}")
+
+        # abre a tela (write=False — sem procedure 1173 de preparação)
+        t = Resultado(z, at_i, nr, write=False).abrir()
+        if not t.items:
+            if not as_json:
+                print("   (sem itens na árvore de resultado)")
+            continue
+
+        for it in sorted(t.items, key=lambda i: i.get("NR_SEQ_PRESCR") or 0):
+            seq = it.get("NR_SEQ_PRESCR")
+            cd = (it.get("CD_EXAME") or "").strip()
+            nm_ex = (it.get("NM_EXAME") or it.get("DS_PROCEDIMENTO") or cd).strip()
+            exame_label = f"{cd} — {nm_ex}" if cd else nm_ex
+            n_exames += 1
+            if seq not in t.nodes:
+                if not as_json:
+                    print(f"   {exame_label}: fora da árvore")
+                sem.append({"paciente": paciente, "atendimento": at_i,
+                            "prescricao": nr, "exame": exame_label})
+                continue
+            antes = len(achados)
+            vo = t.build(seq)["ResultVO"]
+            node = t.nodes[seq][1]
+            idade_n = _idade_anos(node.get("DT_NASCIMENTO"), agora)
+            if idade_n is not None:
+                idade = idade_n
+                is_rn = _is_rn(idade, ds_idade, paciente)
+            meta = {"paciente": paciente, "atend": at_i, "presc": nr,
+                    "exame": exame_label, "cd": cd, "idade": idade, "is_rn": is_rn}
+            n_campos += _analisar_vo(vo, meta, achados)
+            if len(achados) == antes:
+                sem.append({"paciente": paciente, "atendimento": at_i,
+                            "prescricao": nr, "exame": exame_label})
+            else:
+                exames_com_achado.add((at_i, nr, exame_label))
+            if not as_json:
+                s = main_sub(vo)
+                v = cur_value(vo)
+                if str(cd).upper() == HEMO_SIGLA:
+                    lid = hemo_lidos(vo)
+                    resumo = f"Hb={_fmt_val(lid.get(1473))} Ht={_fmt_val(lid.get(1472))} " \
+                             f"PLT={_fmt_val(lid.get(HEMO_PLT))} WBC_tot={_fmt_val(lid.get(HEMO_TOT))}"
+                else:
+                    resumo = _fmt_val(v) if v is not None else "-"
+                    if s and s.get("dsUnidadeMedida"):
+                        resumo += f" {s.get('dsUnidadeMedida')}"
+                print(f"   {cd:<8} seq {seq:<4} {nm_ex[:40]:<40} = {resumo}  [status {vo.get('ieStatusAtend')}]")
+
+    erros = [a for a in achados if a["tipo"] == "digitacao"]
+    crits = [a for a in achados if a["tipo"] == "critico"]
+    totais = {
+        "prescricoes": len(grupos),
+        "amostras_fila": len(rows),
+        "exames": n_exames,
+        "campos": n_campos,
+        "erros_digitacao": len(erros),
+        "criticos": len(crits),
+        "sem_achados": len(sem),
+    }
+
+    if as_json:
+        out = {
+            "periodo": {"de": ini.isoformat(), "ate": fim.isoformat()},
+            "status": LIBERADO_STATUS,
+            "totais": totais,
+            "erros_digitacao": erros,
+            "criticos": crits,
+            "sem_achados": sem,
+        }
+        print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
+        return out
+
+    def _print_grupo(titulo, lista):
+        print(f"\n## {titulo} ({len(lista)})")
+        if not lista:
+            print("  (nenhum)")
+            return
+        for a in lista:
+            prov = f" | valor provável: {_fmt_val(a['valor_provavel'])}" if a.get("valor_provavel") is not None else ""
+            uni = f" {a['unidade']}" if a.get("unidade") else ""
+            print(f"  • {a['paciente']} | AT {a['atendimento']} | presc {a['prescricao']}")
+            print(f"    exame: {a['exame']} | campo: {a['campo']} = {_fmt_val(a['valor'])}{uni}")
+            print(f"    motivo: {a['motivo']}{prov}")
+
+    _print_grupo("Possíveis erros de digitação", erros)
+    _print_grupo("Resultados críticos", crits)
+    print(f"\n## Sem achados ({len(sem)} exame(s))")
+    if sem:
+        for s in sem:
+            print(f"  • {s['paciente']} | AT {s['atendimento']} | presc {s['prescricao']} | {s['exame']}")
+    else:
+        print("  (nenhum)")
+
+    print("\n## Totais")
+    print(f"  Prescrições conferidas: {totais['prescricoes']}")
+    print(f"  Amostras na fila:       {totais['amostras_fila']}")
+    print(f"  Exames conferidos:      {totais['exames']}")
+    print(f"  Campos conferidos:      {totais['campos']}")
+    print(f"  Erros de digitação:     {totais['erros_digitacao']}")
+    print(f"  Resultados críticos:    {totais['criticos']}")
+    print(f"  Sem achados:            {totais['sem_achados']}")
+    return {"totais": totais, "erros_digitacao": erros, "criticos": crits, "sem_achados": sem}
+
+
+
 def main():
     ap = argparse.ArgumentParser(prog="zion.py")
     ap.add_argument("--user", dest="cli_user", default=None,
@@ -1624,6 +2376,12 @@ def main():
         hm.add_argument("--" + o, type=str, required=True)
     hm.add_argument("--dry-run", action="store_true"); hm.add_argument("--forcar", action="store_true")
     hm.add_argument("--dump-payload", help="grava o payload do save neste arquivo")
+    cf = sp.add_parser("conferir",
+                       help="só leitura: audita TODOS os exames liberados (status 40) do período")
+    cf.add_argument("--de", help="início DD/MM/AAAA[ HH:MM] (padrão: hoje 00:00:00)")
+    cf.add_argument("--ate", help="fim DD/MM/AAAA[ HH:MM] (padrão: agora)")
+    cf.add_argument("--at", dest="atendimento", type=int, help="filtra um atendimento")
+    cf.add_argument("--json", dest="as_json", action="store_true", help="saída JSON")
     a = ap.parse_args()
     t0 = time.time()
 
@@ -1663,6 +2421,8 @@ def main():
         cmd_resultado(z, a.atendimento, a.exame, a.dry_run, a.forcar, a.dump_payload)
     elif a.cmd == "hemo":
         cmd_hemo(z, a.atendimento, a, a.dry_run, a.forcar, a.dump_payload)
+    elif a.cmd == "conferir":
+        cmd_conferir(z, a.de, a.ate, a.atendimento, a.as_json)
     else:
         cmd_gaso(z, a.atendimento, a, a.dry_run, a.forcar, a.dump_payload)
     log(f"[{time.time() - t0:.1f}s, {z.ncalls} chamadas de serviço]")

@@ -7,7 +7,8 @@ CLI em Python para operar o módulo de Laboratório do **Zion / Philips Tasy 5.0
 
 - coloca atendimentos em **Digitação do Resultado**;
 - digita e **salva** resultados (bioquímica, campos com várias partes, listas/texto, gasometria e hemograma);
-- relê os valores depois de salvar e compara com o que foi enviado.
+- relê os valores depois de salvar e compara com o que foi enviado;
+- **confere** todos os exames liberados do dia (erros de digitação e resultados críticos) — só leitura.
 
 > ⚠️ O CLI **nunca libera** resultado. Ele só salva. Quem libera/laudo é sempre o profissional, pelo sistema.
 
@@ -85,6 +86,20 @@ python3 zion.py digitacao 123456
 Lê os valores salvos de todos os exames em Digitação.
 ```bash
 python3 zion.py ler 123456
+```
+
+### `conferir [--de DD/MM/AAAA[ HH:MM]] [--ate ...] [--at AT] [--json]`
+**Só leitura.** Lista absolutamente todos os exames com status **Exame Liberado** (40) no período (padrão: hoje 00:00 → agora), abre cada prescrição, lê todos os campos e classifica achados em:
+
+- **Possível erro de digitação** — escala ×10/×100/×1000, pares de sedimento EAS inconsistentes, leucograma ≠ 100%, Ht/Hb/CHCM/VCM incoerentes, BD > BT, pH sanguíneo fora de 6,8–7,8, campo principal zerado, conclusão vs valor (Beta HCG), eTFG vazia com creatinina e idade > 12, heurística “> 10× referência”.
+- **Resultado crítico** — valores de pânico (Hb < 7; PLT < 50 mil ou > 1 milhão; leucócitos totais < 2 mil ou > 30 mil; K < 2,8 ou > 6,2; Na < 120 ou > 160; iCa < 0,8 ou > 1,6; glicose < 50 ou > 400; creatinina > 5 adulto; BT > 15 em RN; pH < 7,20 ou > 7,60; pCO₂ < 20 ou > 70; lactato > 4; RNI > 4; sorologias reagentes).
+
+Limites ficam em tabelas editáveis no código (`PLAUS_BOUNDS`, `CRITICO_BOUNDS`). **Nunca** salva, aprova nem libera. Informe no relatório os totais de prescrições/exames/campos conferidos.
+```bash
+python3 zion.py conferir
+python3 zion.py conferir --de 27/10/2026 --ate 27/10/2026 23:59
+python3 zion.py conferir --at 123456
+python3 zion.py conferir --json
 ```
 
 ### `resultado AT --exame SIGLA=valor [...] [--dry-run] [--forcar] [--dump-payload ARQ]`

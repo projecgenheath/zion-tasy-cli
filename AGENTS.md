@@ -22,6 +22,20 @@ Quando perguntarem "quantos pacientes/exames pendentes", "o que tem na fila", et
 - `python3 zion.py fila --status 30 --exames`: amostras e exames de uma etapa (ex.: tudo que está esperando digitação).
 Janela: pedidos dos últimos 4 dias.
 
+## Conferir liberados (erros de digitação / críticos)
+Quando pedirem para "verificar resultados críticos", "conferir liberações", "ver se digitou errado" (ex. plaquetas 200.000.000), use:
+```bash
+python3 zion.py conferir                  # hoje 00:00 → agora
+python3 zion.py conferir --de 27/10/2026
+python3 zion.py conferir --at AT
+python3 zion.py conferir --json
+```
+- Cobre **absolutamente todos** os exames com status **40 = Exame Liberado** do período (paginação completa; todas as prescrições, exames e campos).
+- **Só leitura** — não salva, não aprova, não libera.
+- Classifica em **possível erro de digitação** e **resultado crítico**; termina com totais e a lista de exames sem achados.
+- Reporte ao usuário TODOS os achados (paciente, AT, presc, exame, campo, valor, motivo, valor provável se for escala).
+- Não versione a saída (contém dados de paciente).
+
 ## Fluxo padrão
 1. `python3 zion.py listar AT` para ver o que existe.
 2. `python3 zion.py digitacao AT` para levar os exames a Digitação (`--dry-run` antes se houver dúvida).
@@ -98,4 +112,5 @@ Campos que não estão no papel **não** devem ser enviados.
 ## Nunca
 - Liberar resultados.
 - Clicar "Cancelar" na tela de resultado se estiver no navegador (descarta alterações não salvas).
-- Versionar ou compartilhar `.session.json`, HAR, payloads (`--dump-payload`) ou qualquer dado de paciente.
+- Versionar ou compartilhar `.session.json`, HAR, payloads (`--dump-payload`), saída do `conferir` ou qualquer dado de paciente.
+- No `conferir`, nunca tentar "corrigir" sozinho — só reporte; correção só se o usuário pedir (e exame liberado exige quem tenha permissão de desfazer).
