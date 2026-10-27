@@ -628,7 +628,7 @@ def valor_campo(s, txt):
         return f, dec
     if fmt == "S":
         ops = [o.get("CD") for o in (s.get("optionalValues") or [])]
-        m = [o for o in ops if _slug(o) == _slug(txt)] or [o for o in ops if str(o).strip().upper() == str(txt).strip().upper()]
+        m = [o for o in ops if str(o).strip().upper() == str(txt).strip().upper()] or ([o for o in ops if _slug(o) == _slug(txt)] if _slug(txt) else [])
         if not m: return f"'{txt}' inválido para {s.get('nmExame')} (opções: {' / '.join(ops)})"
         return m[0], 0
     if fmt in ("D", "DL"): return str(txt), 0
