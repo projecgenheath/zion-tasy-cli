@@ -12,6 +12,8 @@ CLI em Python para operar o módulo de Laboratório do **Zion / Philips Tasy 5.0
 
 > ⚠️ O CLI **nunca libera** resultado. Ele só salva. Quem libera/laudo é sempre o profissional, pelo sistema.
 
+> ⚠️ **sorologia ≠ teste rápido.** Sorologias (Toxoplasmose IgG/IgM, Anti-HCV, HBsAg, CMV, Rubéola, Sorologia HIV 1/2, etc.) vão para **laboratório externo** — o CLI **recusa** qualquer digitação nelas (nem `--forcar` libera). Testes rápidos (`TRTOXO`, `HIV`, `TRS`, `TRHCV`, …) continuam normais.
+
 ## Instalação
 
 ```bash
@@ -122,6 +124,8 @@ Digita exames por sigla (a sigla do exame no Tasy: `NA+`, `K+`, `CREA`, `UREA`, 
   python3 zion.py resultado 123456 --forcar --exame URN1.Hemoglobina=++ \
     --exame URN1.celulas=13000 --exame URN1.leucocitos_ml=2000 --exame URN1.hemacias=21000
   ```
+- **Sorologias / exames externos (BLOQUEADO):** qualquer exame cujo nome contenha "Sorologia" (ignora maiúsculas/acentos) ou cuja sigla esteja em `EXAMES_EXTERNOS_BLOQUEADOS` (`TOXG`, `TOXM`, `HBSAG`, `HCV`, `HBCM`, `HBCG`, `A-HBS`, `CMVG`, `CMVM`, `RUGE`, `RUME`, `HIV1/2`, …) é **recusado**. Sem override. **sorologia ≠ teste rápido.**
+- **Teste Rápido HIV (`HIV`):** o Teste Rápido 2 só se realiza se o Teste Rápido 1 for **REAGENTE**. Se TR1 = **NÃO REAGENTE**, o CLI grava TR2 = **NÃO REALIZADO** (mesmo que mandem NR) e avisa; se TR2 for omitido, também preenche NÃO REALIZADO.
 - `--forcar`: sobrescreve campos que já têm valor (sem ele, campos preenchidos são preservados).
 - `--dry-run`: mostra o que seria enviado, sem salvar.
 - `--dump-payload ARQ`: grava o payload do save (útil para depuração; **não versionar**, contém dados de paciente).

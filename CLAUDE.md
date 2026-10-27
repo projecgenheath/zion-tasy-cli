@@ -46,6 +46,8 @@ python3 zion.py conferir --json
 
 ## Regras de digitação
 - **Nunca liberar** resultado. O CLI só salva; não tente liberar por nenhum outro meio. Se aparecer confirmação de mudança para "Resultado Aprovado (Laudado)", cancele essa confirmação.
+- **⚠️ sorologia ≠ teste rápido.** Sorologias (nome contendo "Sorologia", ou siglas em `EXAMES_EXTERNOS_BLOQUEADOS`: TOXG, TOXM, HBSAG, HCV, HBCM, HBCG, A-HBS, CMVG, CMVM, RUGE, RUME, HIV1/2, …) vão para **outro laboratório**. O CLI **recusa** digitar nelas em `resultado`/`hemo`/`gaso` — **sem override**, nem com `--forcar`. Não invente valor nem zere. Testes rápidos (`TRTOXO`, `HIV`, `TRS`, `TRHCV`) seguem normais.
+- **Teste Rápido HIV (`HIV`):** TR2 só é feito se TR1 = REAGENTE. Se TR1 = NÃO REAGENTE, grave TR2 = **NÃO REALIZADO** (o CLI troca sozinho e avisa, inclusive se TR2 vier omitido ou como NR). Não confundir `HIV` (teste rápido) com `HIV1/2` (sorologia, bloqueada).
 - **Creatinina (CREA):** se o layout tiver campo de idade (ex.: "Idade (Sexo Feminino > 18 anos)") e o paciente tiver mais de 12 anos, o CLI preenche a idade automaticamente a partir da data de nascimento e envia a eTFG (MDRD 186) para o campo calculado. Pacientes ≤ 12 anos ficam intactos. Se o usuário passar `CREA.idade=...` ou `CREA.etfg=...`, esses valores são respeitados.
 - **Ureia:** só a parte inteira, truncada (30,56 → 30; 11,72 → 11).
 - **Bilirrubina indireta:** aceite o valor recalculado pelo sistema (total − direta), mesmo que difira do aparelho por arredondamento.

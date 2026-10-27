@@ -12,6 +12,8 @@ Uso:
   python3 zion.py resultado AT --exame NA+=134.9 [--exame ...] [--dry-run] [--forcar]
   python3 zion.py gaso AT --na 134.9 --k 4.37 --ica 1.08 --cl 105.7 [--glu --lac --ph ...] [--dry-run] [--forcar]
   (nunca libera; após salvar relê via build e compara)
+  Sorologias / exames externos NÃO são digitados (vão p/ outro lab).
+  Testes rápidos (TRTOXO, HIV, TRS, …) continuam normais. sorologia ≠ teste rápido.
 
 Credenciais: na 1ª vez o CLI pede usuário e senha (getpass) e grava em
 ~/.config/zion-cli/credentials.json (Windows: %APPDATA%\\zion-cli\\), permissão 600.
@@ -870,6 +872,50 @@ def vdiff(a, b):
 import unicodedata
 def _slug(t): return "".join(c for c in unicodedata.normalize("NFD", str(t).lower()) if c.isalnum())
 
+
+def _sem_acento(t):
+    return "".join(c for c in unicodedata.normalize("NFD", str(t)) if unicodedata.category(c) != "Mn")
+
+
+# Exames que vão para laboratório externo — NÃO digitar valor por enquanto.
+# Lista editável (siglas). A trava também cobre qualquer exame cujo NOME contenha
+# "Sorologia" (ignora maiúsculas/acentos). NÃO confundir com testes rápidos
+# (TRTOXO, HIV, TRS, TRHCV, …), que continuam sendo digitados normalmente.
+# sorologia ≠ teste rápido. Sem override (nem --forcar).
+EXAMES_EXTERNOS_BLOQUEADOS = {
+    "TOXG", "TOXM",           # Sorologia Toxoplasmose IgG / IgM
+    "HBSAG", "HCV",           # Hepatite B Ag / Anti-HCV
+    "HBCM", "HBCG", "A-HBS",  # Hepatite B Anti-HBc / anti-HBs
+    "CMVG", "CMVM",           # Citomegalovírus IgG / IgM
+    "RUGE", "RUME",           # Rubéola IgG / IgM
+    "HIV1/2",                 # Sorologia HIV (≠ Teste Rápido HIV)
+}
+
+
+def exame_externo_bloqueado(it_or_cd, nm=None):
+    """True se for sorologia/exame externo: recusar qualquer digitação."""
+    if isinstance(it_or_cd, dict):
+        cd = str(it_or_cd.get("CD_EXAME") or "").strip()
+        nm = str(it_or_cd.get("NM_EXAME") or "")
+    else:
+        cd = str(it_or_cd or "").strip()
+        nm = str(nm or "")
+    if cd.upper() in {x.upper() for x in EXAMES_EXTERNOS_BLOQUEADOS}:
+        return True
+    if "sorologia" in _sem_acento(nm).lower():
+        return True
+    return False
+
+
+def msg_bloqueio_externo(it):
+    cd = (it.get("CD_EXAME") if isinstance(it, dict) else it) or "?"
+    nm = ((it.get("NM_EXAME") if isinstance(it, dict) else "") or "").strip()
+    nome = f"{cd}" + (f" ({nm})" if nm else "")
+    return (f"{nome}: BLOQUEADO — sorologia/exame externo (vai para outro laboratório). "
+            "Não digitar valor por enquanto. sorologia ≠ teste rápido "
+            "(TRTOXO/HIV/TRS/TRHCV seguem normais). Sem override, nem com --forcar.")
+
+
 # apelidos de campo -> trecho do nmExame do subexame
 FIELD_ALIAS = {"abo": "tiposanguineoabo", "rh": "fatorrhd", "du": "fatordu", "ci": "coombsindireto",
                "coombsindireto": "coombsindireto", "obs": "observacao"}
@@ -1150,6 +1196,82 @@ def exame_campos(vo, campos):
     return out
 
 
+
+def _is_hiv_rapido_vo(vo):
+    """Teste Rápido HIV 1/2: tem os subcampos Teste Rápido 1 e Teste Rápido 2."""
+    slugs = {_slug(x.get("nmExame")) for x in vo.get("subExams") or []}
+    return "testerapido1" in slugs and "testerapido2" in slugs
+
+
+def _hiv_eh_nao_reagente(txt):
+    if txt is None:
+        return False
+    s = _slug(txt)
+    return s in ("naoreagente", "naoreagente", "nr", "nao", "negativo", "negativa", "neg") or s.startswith("naoreagente")
+
+
+def _hiv_campo_key(campos, sub):
+    """Acha a chave em campos que aponta para este subexame (nome livre ou slug)."""
+    alvo = _slug(sub.get("nmExame"))
+    for k in list(campos.keys()):
+        if k is None:
+            continue
+        if _slug(k) == alvo or alvo in _slug(k) or _slug(k) in alvo:
+            return k
+    return None
+
+
+def completar_hiv(it, vo, campos):
+    """Teste Rápido HIV: se TR1 = NÃO REAGENTE, TR2 fica NÃO REALIZADO (mesmo que mandem NR).
+    Se TR2 for omitido nesse caso, também preenche NÃO REALIZADO. Aviso claro na troca.
+    Não altera quando TR1 é REAGENTE."""
+    if not _is_hiv_rapido_vo(vo):
+        return campos
+    # só no exame HIV (teste rápido), nunca na sorologia HIV1/2
+    cd = str((it or {}).get("CD_EXAME") or "").upper()
+    nm = str((it or {}).get("NM_EXAME") or "")
+    if exame_externo_bloqueado(it or {"CD_EXAME": cd, "NM_EXAME": nm}):
+        return campos
+    if "sorologia" in _sem_acento(nm).lower():
+        return campos
+    by = {_slug(x.get("nmExame")): x for x in vo["subExams"]}
+    tr1, tr2 = by.get("testerapido1"), by.get("testerapido2")
+    if not tr1 or not tr2:
+        return campos
+    out = dict(campos)
+    k1 = _hiv_campo_key(out, tr1)
+    k2 = _hiv_campo_key(out, tr2)
+    # valor efetivo do TR1: o que vai ser gravado, ou o já salvo
+    if k1 is not None:
+        v1 = out[k1]
+    else:
+        v1 = sub_val(tr1)
+    if not _hiv_eh_nao_reagente(v1):
+        return out  # TR1 reagente ou vazio: não mexe no TR2
+    alvo_tr2 = "NÃO REALIZADO"
+    # garante chave legível
+    key2 = k2 if k2 is not None else tr2.get("nmExame")
+    atual2 = out.get(key2) if key2 in out else (out.get(k2) if k2 else None)
+    if atual2 is None and k2 is None:
+        # omitido: preencher
+        out[key2] = alvo_tr2
+        print(f"  HIV: Teste Rápido 1 = NÃO REAGENTE → Teste Rápido 2 omitido; "
+              f"gravando '{alvo_tr2}' (TR2 só se faz se TR1 for REAGENTE)")
+    else:
+        # veio valor: só troca se não for já NÃO REALIZADO
+        bruto = atual2 if atual2 is not None else out.get(k2)
+        if _slug(bruto) != _slug(alvo_tr2):
+            print(f"  HIV: Teste Rápido 1 = NÃO REAGENTE → Teste Rápido 2 "
+                  f"'{bruto}' trocado por '{alvo_tr2}' "
+                  f"(TR2 só se realiza quando TR1 é REAGENTE)")
+            out[key2] = alvo_tr2
+            if k2 is not None and k2 != key2:
+                out.pop(k2, None)
+        else:
+            out[key2] = alvo_tr2
+    return out
+
+
 # exames de vários campos: nrSeqExame do exame -> {campo: nrSeqExame do subexame}
 MULTI = {575: {"total": 36503, "direta": 36504, "indireta": 36505}}   # Bilirrubina Total e Frações
 
@@ -1286,6 +1408,9 @@ def lancar(z, atend, pedidos, dry, forcar, telas=None, dump=None):
     for chave, t, it, campos in grupos.values():
         seq, nse = it["NR_SEQ_PRESCR"], it["NR_SEQ_EXAME"]
         tag = f"{it['CD_EXAME']} (prescr {t.nr} seq {seq})"
+        if exame_externo_bloqueado(it):
+            print(f"  {msg_bloqueio_externo(it)}")
+            rel.append((tag, "bloqueado externo")); continue
         if it.get("IE_STATUS_ATEND") != 30 or seq not in t.nodes:
             print(f"  {tag}: status {it.get('IE_STATUS_ATEND')} - não está em Digitação, ignorado"); continue
         if nse in MULTI and 575 == nse: campos = completar_bili(campos)
@@ -1293,6 +1418,7 @@ def lancar(z, atend, pedidos, dry, forcar, telas=None, dump=None):
         node = t.nodes[seq][1] if seq in t.nodes else {}
         campos = completar_crea(it, vo, campos, node)
         campos = completar_eas(vo, campos)
+        campos = completar_hiv(it, vo, campos)
         cs = exame_campos(vo, campos)
         if isinstance(cs, str):
             print(f"  {tag}: {cs} - não lançado"); rel.append((tag, "não suportado")); continue
@@ -1389,6 +1515,8 @@ def gaso_payload(vo, env):
 def gaso_lancar(t, it, vals, obs, dry, forcar, dump=None):
     seq, nse = it["NR_SEQ_PRESCR"], it["NR_SEQ_EXAME"]
     tag = f"{it['CD_EXAME']} (prescr {t.nr} seq {seq})"
+    if exame_externo_bloqueado(it):
+        print(f"  {msg_bloqueio_externo(it)}"); return
     if it.get("IE_STATUS_ATEND") != 30 or seq not in t.nodes:
         print(f"  {tag}: status {it.get('IE_STATUS_ATEND')} - não está em Digitação, ignorado"); return
     vo = t.clicar(seq, nse)["ResultVO"]
@@ -1564,6 +1692,8 @@ def cmd_hemo(z, atend, a, dry, forcar, dump=None):
     for t, it in hit:
         seq, nse = it["NR_SEQ_PRESCR"], it["NR_SEQ_EXAME"]
         tag = f"HC (prescr {t.nr} seq {seq})"
+        if exame_externo_bloqueado(it):
+            print(f"  {msg_bloqueio_externo(it)}"); continue
         if it.get("IE_STATUS_ATEND") != 30 or seq not in t.nodes:
             print(f"  {tag}: status {it.get('IE_STATUS_ATEND')} - não está em Digitação, ignorado"); continue
         vo = t.clicar(seq, nse)["ResultVO"]
