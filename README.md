@@ -1,7 +1,18 @@
 # zion-tasy-cli
 
-## ⚠️ Login: quem digita é a pessoa, no terminal
+## 🔐 Login: a IA pode fazer pela pessoa
 
+- A IA **pode** fazer o login. A senha chega por um **canal secreto**: o formulário seguro / campo secreto da plataforma da IA, ou as variáveis de ambiente `ZION_USER` e `ZION_PASSWORD`.
+- Comando (a senha vai pelo stdin, sem eco, nunca no argv):
+  ```bash
+  printf '%s' "$ZION_PASSWORD" | python3 zion.py login --user "$ZION_USER" --password-stdin
+  ```
+  Também funciona só com o ambiente: `ZION_USER=... ZION_PASSWORD=... python3 zion.py login` (valores vindos do canal secreto).
+- O CLI confere o login no Zion e grava em `~/.config/zion-cli/credentials.json` (permissão 600). A senha nunca aparece na saída.
+- A IA **nunca** escreve a senha no texto do chat, em arquivos do repositório, em comandos com a senha literal nem em logs.
+- Se o formulário seguro falhar (ex.: perdeu os campos), a IA tenta de novo ou pede para a pessoa rodar `python3 zion.py login` no terminal.
+- Senha errada: o CLI sai com `Login falhou (HTTP 400): ...`, sem mostrar a senha e sem gravar nada.
+- Quem está logado: `python3 zion.py whoami`. Trocar de usuário: `python3 zion.py logout` e depois `login` de novo.
 - Quem digita usuário e senha é a **pessoa**, direto no terminal dela: `python3 zion.py login`.
 - A IA **nunca** preenche o login, **nunca** pede a senha no chat e **nunca** abre "formulário seguro", "tela de login" ou navegador para isso.
 - Se aparecer pedido de usuário/senha, a IA **para** e diz à pessoa: "rode `python3 zion.py login` no seu terminal".
@@ -42,7 +53,7 @@ python3 -m pip install -r requirements.txt   # só precisa de requests
 3. Próximos comandos reutilizam o arquivo em silêncio. Sessão em `~/.config/zion-cli/session.json`.
 4. Trocar de usuário: `python3 zion.py login` de novo (sobrescreve). Sair: `python3 zion.py logout`. Ver quem está salvo: `python3 zion.py whoami`.
 
-Precedência de usuário/senha: `--user` / `ZION_USER`+`ZION_PASSWORD` (ambiente) → arquivo salvo → prompt interativo. Se a senha salva falhar (senha trocada), o CLI pede de novo e regrava. IAs e scripts devem usar só as variáveis de ambiente (sem prompt).
+Precedência de usuário/senha: `--user` / `ZION_USER`+`ZION_PASSWORD` (ambiente) → arquivo salvo → prompt interativo. Se a senha salva falhar (senha trocada), o CLI pede de novo e regrava. IAs e scripts: variáveis de ambiente ou `login --user U --password-stdin` (sem prompt).
 
 ## Variáveis de ambiente (opcionais; sobrescrevem o arquivo salvo)
 

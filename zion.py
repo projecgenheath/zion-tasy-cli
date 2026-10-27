@@ -362,6 +362,7 @@ class Zion:
             if source == "file" and _is_tty() and not force_prompt:
                 log(f"Login com credenciais salvas falhou (HTTP {r.status_code}). Pedindo de novo…")
                 return self.login(force_prompt=True, save_creds=True)
+            msg = str(msg or "").replace(pw, "***") if pw else msg
             sys.exit(f"Login falhou (HTTP {r.status_code}): {msg}")
 
         self._store_tokens(r)
@@ -2822,7 +2823,10 @@ def main():
     ap.add_argument("--user", dest="cli_user", default=None,
                     help="usuário do Zion (senão ZION_USER / arquivo salvo / prompt)")
     sp = ap.add_subparsers(dest="cmd", required=True)
-    sp.add_parser("login", help="pede usuário/senha (ou usa env), valida e grava em ~/.config/zion-cli/")
+    lg = sp.add_parser("login", help="valida e grava credenciais em ~/.config/zion-cli/ (prompt, env ou --password-stdin)")
+    lg.add_argument("--user", dest="login_user", default=None, help="usuário do Zion")
+    lg.add_argument("--password-stdin", action="store_true",
+                    help="lê a senha do stdin (sem eco; nunca passe a senha no argv)")
     sp.add_parser("logout", help="apaga credenciais salvas e a sessão local")
     sp.add_parser("whoami", help="mostra só o usuário salvo (nunca a senha)")
     fl = sp.add_parser("fila", help="fila geral de pendentes por etapa, sem número de atendimento")
@@ -2887,6 +2891,20 @@ def main():
             raise SystemExit(1)
         return
 
+    if a.cmd == "login":
+        lu = getattr(a, "login_user", None)
+        if lu:
+            a.cli_user = lu.strip()
+        if getattr(a, "password_stdin", False):
+            pw = sys.stdin.read().rstrip("\r\n")
+            if not pw:
+                sys.exit("Senha vazia no stdin.")
+            u = (a.cli_user or os.environ.get("ZION_USER") or "").strip()
+            if not u:
+                sys.exit("Com --password-stdin informe --user ou ZION_USER.")
+            os.environ["ZION_USER"] = u
+            os.environ["ZION_PASSWORD"] = pw
+            del pw
     z = Zion(cli_user=a.cli_user)
     if a.cmd == "login":
         z.login(force_prompt=True, save_creds=True)
