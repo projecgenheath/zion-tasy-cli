@@ -2,17 +2,22 @@
 
 ## 🔐 Login: a IA pode fazer pela pessoa
 
-- A IA **pode** fazer o login. A senha chega por um **canal secreto**: o formulário seguro / campo secreto da plataforma da IA, ou as variáveis de ambiente `ZION_USER` e `ZION_PASSWORD`.
-- Comando (a senha vai pelo stdin, sem eco, nunca no argv):
+- A pessoa pode mandar o **usuário e a senha direto no chat** da IA. Não precisa de formulário nem campo seguro.
+- A IA usa os dois direto, passando a senha **pelo stdin** (nunca como argumento):
   ```bash
-  printf '%s' "$ZION_PASSWORD" | python3 zion.py login --user "$ZION_USER" --password-stdin
+  python3 zion.py login --user "USUARIO" --password-stdin <<'SENHA'
+  a_senha_aqui
+  SENHA
+  # ou: printf '%s' 'a_senha_aqui' | python3 zion.py login --user "USUARIO" --password-stdin
   ```
-  Também funciona só com o ambiente: `ZION_USER=... ZION_PASSWORD=... python3 zion.py login` (valores vindos do canal secreto).
-- O CLI confere o login no Zion e grava em `~/.config/zion-cli/credentials.json` (permissão 600). A senha nunca aparece na saída.
-- A IA **nunca** escreve a senha no texto do chat, em arquivos do repositório, em comandos com a senha literal nem em logs.
-- Se o formulário seguro falhar (ex.: perdeu os campos), a IA tenta de novo ou pede para a pessoa rodar `python3 zion.py login` no terminal.
+- Depois de logar, a IA confere com `python3 zion.py whoami`.
+- O CLI valida no Zion e grava em `~/.config/zion-cli/credentials.json` (permissão 600). As credenciais ficam **só** nesse arquivo protegido.
+- A IA **não** repete a senha nas respostas, **não** grava a senha em arquivos do repositório nem em logs e **não** faz commit dela.
+- Continuam valendo: variáveis `ZION_USER`/`ZION_PASSWORD` (`printf '%s' "$ZION_PASSWORD" | python3 zion.py login --user "$ZION_USER" --password-stdin`) e o `python3 zion.py login` interativo no terminal.
 - Senha errada: o CLI sai com `Login falhou (HTTP 400): ...`, sem mostrar a senha e sem gravar nada.
-- Quem está logado: `python3 zion.py whoami`. Trocar de usuário: `python3 zion.py logout` e depois `login` de novo.
+- Trocar de usuário: `python3 zion.py logout` e depois `login` de novo.
+
+> **Nota:** a senha enviada no chat fica no histórico da conversa. Recomenda-se trocá-la periodicamente.
 
 
 > **Para IAs e usuários:** URL, perfil e setor padrão já estão em `.env.example`. Na **primeira vez**, rode `python3 zion.py login` — o CLI pede usuário e senha, valida e grava em `~/.config/zion-cli/credentials.json` (não precisa digitar de novo). IAs/CI: exporte `ZION_USER` e `ZION_PASSWORD`. Leia `AGENTS.md` antes de operar. Fila: `python3 zion.py fila --resumo`.
