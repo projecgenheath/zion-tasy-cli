@@ -1,6 +1,6 @@
 # zion-tasy-cli
 
-> **Para IAs e usuários:** URL, usuário, perfil e setor já estão em `.env.example` e são carregados automaticamente. **Só falta a senha**: crie `.env` com `ZION_PASSWORD=...` e rode `python3 zion.py login`. Leia `AGENTS.md` antes de operar. Para ver a fila geral de pendentes sem número de atendimento: `python3 zion.py fila --resumo` (ou `fila --status 30 --exames`).
+> **Para IAs e usuários:** URL, perfil e setor padrão já estão em `.env.example`. Na **primeira vez**, rode `python3 zion.py login` — o CLI pede usuário e senha, valida e grava em `~/.config/zion-cli/credentials.json` (não precisa digitar de novo). IAs/CI: exporte `ZION_USER` e `ZION_PASSWORD`. Leia `AGENTS.md` antes de operar. Fila: `python3 zion.py fila --resumo`.
 
 
 CLI em Python para operar o módulo de Laboratório do **Zion / Philips Tasy 5.04** (web) sem navegador. Com ele você:
@@ -17,26 +17,54 @@ CLI em Python para operar o módulo de Laboratório do **Zion / Philips Tasy 5.0
 python3 -m pip install -r requirements.txt   # só precisa de requests
 ```
 
-## Variáveis de ambiente (obrigatórias)
+## Primeiro uso / trocar de usuário
+
+1. `pip install -r requirements.txt`
+2. Na primeira vez (ou para trocar de conta):
+   ```bash
+   python3 zion.py login
+   ```
+   O CLI pede **usuário** e **senha** (a senha não ecoa), valida no Zion, escolhe o perfil (usa o padrão do `.env.example` ou o único disponível; se houver vários e o padrão não existir, lista e pergunta) e grava tudo em:
+   - Linux/macOS: `~/.config/zion-cli/credentials.json` (permissão `600`)
+   - Windows: `%APPDATA%\zion-cli\credentials.json`
+3. Próximos comandos reutilizam o arquivo em silêncio. Sessão em `~/.config/zion-cli/session.json`.
+4. Trocar de usuário: `python3 zion.py login` de novo (sobrescreve). Sair: `python3 zion.py logout`. Ver quem está salvo: `python3 zion.py whoami`.
+
+Precedência de usuário/senha: `--user` / `ZION_USER`+`ZION_PASSWORD` (ambiente) → arquivo salvo → prompt interativo. Se a senha salva falhar (senha trocada), o CLI pede de novo e regrava. IAs e scripts devem usar só as variáveis de ambiente (sem prompt).
+
+## Variáveis de ambiente (opcionais; sobrescrevem o arquivo salvo)
 
 | Variável | Exemplo | Descrição |
 |---|---|---|
-| `ZION_URL` | `https://seuhospital.zion-srv.com` | URL base do Zion, sem barra no final |
-| `ZION_USER` | `nome.sobrenome` | Seu usuário do Tasy |
-| `ZION_PASSWORD` | — | Sua senha. Nunca é impressa nem gravada |
-| `ZION_PROFILE` | `Laboratório - Biomédico` | Nome **exato** do perfil que será ativado após o login |
-| `ZION_SETOR` | `Serv. Laboratório Análises Clínicas` | (opcional) nome do setor, só para conferência/aviso |
+| `ZION_URL` | `https://sbsj.zion-srv.com` | URL base do Zion (default no `.env.example`) |
+| `ZION_USER` | `nome.sobrenome` | Usuário do Tasy |
+| `ZION_PASSWORD` | — | Senha. Nunca é impressa; se o login ok, também é gravada no arquivo local de credenciais |
+| `ZION_PROFILE` | `HMMCC - Laboratório - Biomédico` | Nome do perfil ativado após o login |
+| `ZION_SETOR` | `HMMCC - Serv. Laboratório Análises Clínicas` | (opcional) setor, só para conferência/aviso |
+| `ZION_CONFIG_DIR` | `/tmp/zion-test` | (opcional) pasta das credenciais/sessão — útil em testes |
 
-A sessão fica em `.session.json` (permissão 600), ao lado do `zion.py`. O token é renovado e o login refeito automaticamente. Esse arquivo **nunca** deve ir para o git (já está no `.gitignore`).
+A senha **nunca** vai para o git. Não versionar `credentials.json` nem `.env`.
 
 ## Comandos
 
-Todos aceitam o número do atendimento (`AT`). Os valores podem usar ponto ou vírgula como decimal (prefira ponto no shell).
+Todos aceitam o número do atendimento (`AT`). Os valores podem usar ponto ou vírgula como decimal (prefira ponto no shell). Flag global: `--user NOME` (equivalente a `ZION_USER`).
 
 ### `login`
-Testa login e troca de perfil.
+Pede usuário/senha (ou usa env), valida, grava credenciais e troca de perfil.
 ```bash
 python3 zion.py login
+```
+
+### `logout`
+Apaga o arquivo de credenciais e a sessão local.
+```bash
+python3 zion.py logout
+```
+
+### `whoami`
+Mostra só o usuário salvo (nunca a senha).
+```bash
+python3 zion.py whoami
 ```
 
 ### `listar AT`

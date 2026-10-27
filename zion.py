@@ -2,7 +2,9 @@
 """zion.py - CLI para o Zion/Tasy 5.04 sem navegador.
 
 Uso:
-  python3 zion.py login                       # testa login + perfil
+  python3 zion.py login                       # pede/grava credenciais e testa login + perfil
+  python3 zion.py logout                      # apaga credenciais salvas
+  python3 zion.py whoami                      # mostra só o usuário salvo
   python3 zion.py fila [--status N] [--exames] [--resumo]  # fila geral, sem atendimento
   python3 zion.py listar ATENDIMENTO          # linhas/status por fase
   python3 zion.py digitacao ATENDIMENTO [--dry-run] [--desde STATUS]
@@ -11,14 +13,23 @@ Uso:
   python3 zion.py gaso AT --na 134.9 --k 4.37 --ica 1.08 --cl 105.7 [--glu --lac --ph ...] [--dry-run] [--forcar]
   (nunca libera; após salvar relê via build e compara)
 
-Senha: variável de ambiente ZION_PASSWORD (nunca é impressa).
-Sessão: .session.json (chmod 600) ao lado deste arquivo; renova/reloga sozinho.
+Credenciais: na 1ª vez o CLI pede usuário e senha (getpass) e grava em
+~/.config/zion-cli/credentials.json (Windows: %APPDATA%\\zion-cli\\), permissão 600.
+Precedência: flags/env (ZION_USER, ZION_PASSWORD) > arquivo salvo > prompt.
+Sessão: session.json no mesmo diretório de config; renova/reloga sozinho.
+Senha nunca é impressa.
 """
-import argparse, copy, difflib, json, os, re, sys, time, datetime as dt
+import argparse, copy, difflib, getpass, json, os, re, sys, time, datetime as dt
 import requests
 
-def _load_env():
-    """Carrega .env.example (URL/usuário/perfil já preenchidos) e depois .env (senha). Variáveis já definidas têm prioridade."""
+DEFAULT_URL = "https://sbsj.zion-srv.com"
+DEFAULT_PROFILE = "HMMCC - Laboratório - Biomédico"
+DEFAULT_SETOR = "HMMCC - Serv. Laboratório Análises Clínicas"
+SCOPE = "WTASY"
+
+
+def _load_env_files():
+    """Carrega .env.example e .env com setdefault (env do processo ganha)."""
     here = os.path.dirname(os.path.abspath(__file__))
     vals = {}
     for name in (".env.example", ".env"):
@@ -36,18 +47,191 @@ def _load_env():
     for k, v in vals.items():
         os.environ.setdefault(k, v)
 
-_load_env()
 
-HOST = os.environ.get("ZION_URL", "").rstrip("/")
+_load_env_files()
+
+
+def config_dir():
+    """Diretório de config por usuário (fora do repositório). ZION_CONFIG_DIR sobrescreve (testes)."""
+    override = os.environ.get("ZION_CONFIG_DIR")
+    if override:
+        return os.path.abspath(override)
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "zion-cli")
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(xdg, "zion-cli")
+
+
+def creds_path():
+    return os.path.join(config_dir(), "credentials.json")
+
+
+def session_path():
+    return os.path.join(config_dir(), "session.json")
+
+
+def _is_tty():
+    try:
+        return sys.stdin.isatty() and sys.stderr.isatty()
+    except Exception:
+        return False
+
+
+def read_creds():
+    path = creds_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def write_creds(data):
+    d = config_dir()
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    path = creds_path()
+    payload = {k: v for k, v in data.items() if v not in (None, "")}
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    try:
+        os.chmod(path, 0o600)
+        os.chmod(d, 0o700)
+    except OSError:
+        pass
+
+
+def delete_creds():
+    path = creds_path()
+    if os.path.exists(path):
+        os.remove(path)
+    # sessão antiga do mesmo usuário não deve sobreviver ao logout
+    for p in (session_path(), os.path.join(os.path.dirname(os.path.abspath(__file__)), ".session.json")):
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+def _prompt_username(default=""):
+    hint = f" [{default}]" if default else ""
+    while True:
+        try:
+            u = input(f"Usuário do Zion{hint}: ").strip()
+        except EOFError:
+            sys.exit("Usuário obrigatório (entrada encerrada).")
+        if not u:
+            u = default
+        if u:
+            return u
+        print("Usuário obrigatório.", file=sys.stderr)
+
+
+def _prompt_password(username):
+    try:
+        pw = getpass.getpass(f"Senha do Zion para {username}: ")
+    except EOFError:
+        sys.exit("Senha obrigatória (entrada encerrada).")
+    if not pw:
+        sys.exit("Senha vazia.")
+    return pw
+
+
+def resolve_auth(force_prompt=False, cli_user=None):
+    """Resolve (username, password, source, meta).
+
+    Precedência user/senha: CLI/--user e env > arquivo salvo > prompt.
+    force_prompt (comando login): pede de novo se não houver env/flag; env ainda ganha
+    (modo não-interativo para IAs).
+    meta traz url/profile/setor já resolvidos (env > arquivo > defaults).
+    """
+    saved = read_creds()
+    env_user = (cli_user or os.environ.get("ZION_USER") or "").strip()
+    env_pw = os.environ.get("ZION_PASSWORD") or ""
+
+    url = (os.environ.get("ZION_URL") or saved.get("url") or DEFAULT_URL).rstrip("/")
+    profile = (os.environ.get("ZION_PROFILE") or saved.get("profile") or DEFAULT_PROFILE).strip()
+    setor = (os.environ.get("ZION_SETOR") or saved.get("setor") or DEFAULT_SETOR).strip()
+    meta = {"url": url, "profile": profile, "setor": setor}
+
+    if env_user and env_pw:
+        return env_user, env_pw, "env", meta
+
+    if force_prompt:
+        if not _is_tty() and not (env_user or env_pw or saved):
+            sys.exit(
+                "Sem terminal interativo. Defina ZION_USER e ZION_PASSWORD "
+                "(ou rode `python3 zion.py login` num terminal)."
+            )
+        default_user = env_user or saved.get("username") or ""
+        user = env_user or (_prompt_username(default_user) if _is_tty() else default_user)
+        if not user:
+            sys.exit("Falta ZION_USER (ou rode login num terminal).")
+        pw = env_pw or (_prompt_password(user) if _is_tty() else "")
+        if not pw:
+            sys.exit("Falta ZION_PASSWORD (ou rode login num terminal).")
+        return user, pw, "prompt", meta
+
+    if env_user and not env_pw:
+        # usuário via env, senha do arquivo do mesmo usuário ou prompt
+        if saved.get("username") == env_user and saved.get("password"):
+            return env_user, saved["password"], "file", meta
+        if _is_tty():
+            return env_user, _prompt_password(env_user), "prompt", meta
+        sys.exit("Falta ZION_PASSWORD.")
+
+    if not force_prompt and saved.get("username") and saved.get("password"):
+        return saved["username"], saved["password"], "file", meta
+
+    if _is_tty():
+        user = _prompt_username(saved.get("username") or env_user or "")
+        pw = _prompt_password(user)
+        return user, pw, "prompt", meta
+
+    sys.exit(
+        "Credenciais não encontradas. Rode `python3 zion.py login` (pede usuário e senha) "
+        "ou defina ZION_USER e ZION_PASSWORD no ambiente."
+    )
+
+
+def apply_runtime_config(meta, username=None):
+    """Atualiza HOST/API/USER/PERFIL/SETOR/SESSION_FILE a partir do meta resolvido."""
+    global HOST, API, USER, PERFIL_NOME, SETOR_NOME, SESSION_FILE
+    HOST = (meta.get("url") or DEFAULT_URL).rstrip("/")
+    API = HOST + "/TasyAppServer/resources"
+    if username:
+        USER = username
+    PERFIL_NOME = meta.get("profile") or DEFAULT_PROFILE
+    SETOR_NOME = meta.get("setor") or DEFAULT_SETOR
+    SESSION_FILE = session_path()
+    # migra sessão antiga ao lado do script, se existir e a nova ainda não
+    old = os.path.join(HERE, ".session.json")
+    if not os.path.exists(SESSION_FILE) and os.path.exists(old):
+        try:
+            os.makedirs(config_dir(), mode=0o700, exist_ok=True)
+            os.rename(old, SESSION_FILE)
+            try:
+                os.chmod(SESSION_FILE, 0o600)
+            except OSError:
+                pass
+        except OSError:
+            SESSION_FILE = old  # fallback
+
+
+# Valores iniciais (podem ser sobrescritos em apply_runtime_config / login)
+HOST = (os.environ.get("ZION_URL") or DEFAULT_URL).rstrip("/")
 API = HOST + "/TasyAppServer/resources"
-USER = os.environ.get("ZION_USER", "")
-SCOPE = "WTASY"
-PERFIL_NOME = os.environ.get("ZION_PROFILE", "")
-SETOR_NOME = os.environ.get("ZION_SETOR", "")
+USER = (os.environ.get("ZION_USER") or "").strip()
+PERFIL_NOME = (os.environ.get("ZION_PROFILE") or DEFAULT_PROFILE).strip()
+SETOR_NOME = (os.environ.get("ZION_SETOR") or DEFAULT_SETOR).strip()
 HERE = os.path.dirname(os.path.abspath(__file__))
-if not (HOST and USER and PERFIL_NOME) and __name__ == "__main__":
-    sys.exit("Configuração não encontrada: o arquivo .env.example deve estar na mesma pasta do zion.py.")
-SESSION_FILE = os.path.join(HERE, ".session.json")
+SESSION_FILE = session_path()
 TPL = json.load(open(os.path.join(HERE, "templates.json"), encoding="utf-8"))
 TZ = dt.timezone(dt.timedelta(hours=-3))
 STATUS = {10: "Prescrições / Pendente coleta", 20: "Material Coletado", 25: "Em Análise",
@@ -69,7 +253,8 @@ def log(*a):
 
 
 class Zion:
-    def __init__(self, verbose=False):
+    def __init__(self, verbose=False, cli_user=None):
+        self.cli_user = cli_user
         self.s = requests.Session()
         self.s.headers.update({
             "Accept": "application/json, text/plain, */*",
@@ -86,15 +271,24 @@ class Zion:
 
     # ---------- sessão ----------
     def _save(self):
+        d = os.path.dirname(SESSION_FILE)
+        if d:
+            os.makedirs(d, mode=0o700, exist_ok=True)
         fd = os.open(SESSION_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump(self.sess, f)
-        os.chmod(SESSION_FILE, 0o600)
+        try:
+            os.chmod(SESSION_FILE, 0o600)
+        except OSError:
+            pass
 
     def _apply(self):
         self.s.headers["Authorization"] = "Bearer " + self.sess["access_token"]
         if self.sess.get("xsrf"):
             self.s.headers["crsfToken"] = self.sess["xsrf"]
+        # Origin/Referer podem mudar se a URL veio do arquivo de credenciais
+        self.s.headers["Origin"] = HOST
+        self.s.headers["Referer"] = HOST + "/"
         for c in self.sess.get("cookies", []):
             self.s.cookies.set(c["name"], c["value"], domain=c.get("domain"), path=c.get("path", "/"))
 
@@ -111,32 +305,75 @@ class Zion:
         self._apply()
         self.sess["cookies"] = [{"name": c.name, "value": c.value, "domain": c.domain, "path": c.path} for c in self.s.cookies]
 
-    def login(self):
-        pw = os.environ.get("ZION_PASSWORD")
-        if not pw and sys.stdin.isatty():
-            import getpass
-            pw = getpass.getpass(f"Senha do Zion para {USER}: ")
-        if not pw:
-            sys.exit("Falta só a senha: crie o arquivo .env com ZION_PASSWORD=sua_senha (ou exporte ZION_PASSWORD). URL, usuário e perfil já vêm do .env.example.")
+    def _pick_perfil(self, u, wanted):
+        profiles = u.get("profiles") or []
+        perfil = next((p for p in profiles if p.get("nmPerfil") == wanted), None)
+        if perfil:
+            return perfil, wanted
+        if len(profiles) == 1:
+            only = profiles[0]
+            nome = only.get("nmPerfil") or wanted
+            log(f"Perfil '{wanted}' não encontrado; usando o único disponível: {nome}")
+            return only, nome
+        nomes = [p.get("nmPerfil") for p in profiles if p.get("nmPerfil")]
+        if _is_tty() and nomes:
+            print("Perfis disponíveis:", file=sys.stderr)
+            for i, n in enumerate(nomes, 1):
+                print(f"  {i}) {n}", file=sys.stderr)
+            while True:
+                try:
+                    raw = input("Escolha o número (ou digite o nome exato): ").strip()
+                except EOFError:
+                    break
+                if raw.isdigit() and 1 <= int(raw) <= len(nomes):
+                    nome = nomes[int(raw) - 1]
+                    return next(p for p in profiles if p.get("nmPerfil") == nome), nome
+                hit = next((p for p in profiles if p.get("nmPerfil") == raw), None)
+                if hit:
+                    return hit, raw
+                print("Opção inválida.", file=sys.stderr)
+        lista = ", ".join(nomes) if nomes else "(nenhum)"
+        sys.exit(f"Perfil não encontrado: {wanted}. Disponíveis: {lista}")
+
+    def login(self, force_prompt=False, save_creds=True):
+        global USER, PERFIL_NOME, SETOR_NOME, HOST, API
+        user, pw, source, meta = resolve_auth(force_prompt=force_prompt, cli_user=self.cli_user)
+        apply_runtime_config(meta, username=user)
+        self.s.headers["Origin"] = HOST
+        self.s.headers["Referer"] = HOST + "/"
+
         self.s.cookies.clear(); self.s.headers.pop("Authorization", None); self.s.headers.pop("crsfToken", None)
         self.sess = {}
-        body = {"username": USER, "password": pw, "computerName": None, "osUsername": None, "scope": SCOPE,
+        body = {"username": user, "password": pw, "computerName": None, "osUsername": None, "scope": SCOPE,
                 "timezone": "America/Sao_Paulo", "ipMachine": None, "sessionUnlock": False}
         r = self.s.post(API + "/public/security/oauth", json=body, timeout=30)
         if r.status_code != 200:
-            try: msg = r.json().get("message")
-            except Exception: msg = r.text[:200]
+            try:
+                msg = r.json().get("message")
+            except Exception:
+                msg = r.text[:200]
+            # senha salva desatualizada → pede de novo e grava
+            if source == "file" and _is_tty() and not force_prompt:
+                log(f"Login com credenciais salvas falhou (HTTP {r.status_code}). Pedindo de novo…")
+                return self.login(force_prompt=True, save_creds=True)
             sys.exit(f"Login falhou (HTTP {r.status_code}): {msg}")
+
         self._store_tokens(r)
         u = self.s.get(API + "/user/data", timeout=30).json()
-        perfil = next((p for p in u.get("profiles", []) if p.get("nmPerfil") == PERFIL_NOME), None)
-        if not perfil:
-            sys.exit("Perfil não encontrado: " + PERFIL_NOME)
+        perfil, perfil_nome = self._pick_perfil(u, PERFIL_NOME)
+        PERFIL_NOME = perfil_nome
         if u.get("cdPerfil") != perfil["cdPerfil"]:
             r = self.s.post(API + "/user/profile", json={"profile": perfil["cdPerfil"], "changingProfile": True}, timeout=30)
             r.raise_for_status()
             u = r.json() if r.content else self.s.get(API + "/user/data", timeout=30).json()
         setor = next((s for c in u.get("classificationSectors", []) for s in c.get("sectors", []) if s.get("nmSetor") == SETOR_NOME), None)
+        if not setor:
+            # tenta o setor atual do usuário; se houver só um, usa
+            setores = [s for c in u.get("classificationSectors", []) for s in c.get("sectors", [])]
+            if len(setores) == 1:
+                setor = setores[0]
+                SETOR_NOME = setor.get("nmSetor") or SETOR_NOME
+                log(f"Setor padrão não encontrado; usando o único disponível: {SETOR_NOME}")
         self.sess.update({"cdPerfil": u.get("cdPerfil"), "cdSetor": u.get("cdSetorAtendimento"),
                           "nmUsuario": u.get("nmUsuario"), "cdEstab": u.get("cdEstabelecimento"),
                           "setor_esperado": setor and setor["cdSetor"]})
@@ -146,6 +383,21 @@ class Zion:
             log(f"AVISO: setor atual {u.get('cdSetorAtendimento')} != {SETOR_NOME} ({setor['cdSetor']})")
         self.sess["cookies"] = [{"name": c.name, "value": c.value, "domain": c.domain, "path": c.path} for c in self.s.cookies]
         self._save()
+
+        if save_creds:
+            # grava sempre após login ok (env ou prompt) para próximos usos
+            prev = read_creds()
+            write_creds({
+                "username": user,
+                "password": pw,
+                "url": HOST,
+                "profile": PERFIL_NOME,
+                "setor": SETOR_NOME,
+                **{k: v for k, v in prev.items() if k not in ("username", "password", "url", "profile", "setor")},
+            })
+            if source != "file":
+                log(f"Credenciais salvas em {creds_path()}")
+
         log(f"Login OK: {u.get('nmPessoaFisica')} ({u.get('nmUsuario')}), perfil {u.get('cdPerfil')} {PERFIL_NOME}, setor {u.get('cdSetorAtendimento')}")
         return u
 
@@ -158,6 +410,18 @@ class Zion:
         return True
 
     def ensure(self):
+        apply_runtime_config({
+            "url": HOST, "profile": PERFIL_NOME, "setor": SETOR_NOME,
+        }, username=USER or None)
+        # se há credenciais/env, aplica URL/user delas antes de reusar sessão
+        saved = read_creds()
+        meta = {
+            "url": (os.environ.get("ZION_URL") or saved.get("url") or HOST).rstrip("/"),
+            "profile": (os.environ.get("ZION_PROFILE") or saved.get("profile") or PERFIL_NOME).strip(),
+            "setor": (os.environ.get("ZION_SETOR") or saved.get("setor") or SETOR_NOME).strip(),
+        }
+        apply_runtime_config(meta, username=(os.environ.get("ZION_USER") or saved.get("username") or USER or None))
+
         if not self.sess and os.path.exists(SESSION_FILE):
             try:
                 self.sess = json.load(open(SESSION_FILE)); self._apply()
@@ -258,7 +522,7 @@ def plan_sample(z, amostra, cur, target=30):
         return []
     lst = ",".join(map(str, seqs)); dsql = f" and c.nr_sequencia in ({lst})"
     sqlitem = "".join(f"{s} " for s in seqs)
-    user = z.sess.get("nmUsuario") or "alisson.siqueir"
+    user = z.sess.get("nmUsuario") or USER
     steps = []
     while cur in NEXT and cur < target:
         nxt = NEXT[cur]; sn = str(nxt)
@@ -1330,8 +1594,12 @@ def cmd_hemo(z, atend, a, dry, forcar, dump=None):
 
 def main():
     ap = argparse.ArgumentParser(prog="zion.py")
+    ap.add_argument("--user", dest="cli_user", default=None,
+                    help="usuário do Zion (senão ZION_USER / arquivo salvo / prompt)")
     sp = ap.add_subparsers(dest="cmd", required=True)
-    sp.add_parser("login")
+    sp.add_parser("login", help="pede usuário/senha (ou usa env), valida e grava em ~/.config/zion-cli/")
+    sp.add_parser("logout", help="apaga credenciais salvas e a sessão local")
+    sp.add_parser("whoami", help="mostra só o usuário salvo (nunca a senha)")
     fl = sp.add_parser("fila", help="fila geral de pendentes por etapa, sem número de atendimento")
     fl.add_argument("--status", type=int, choices=[10, 20, 25, 26, 30], help="só esta etapa")
     fl.add_argument("--exames", action="store_true", help="lista também amostras e exames de cada atendimento")
@@ -1357,9 +1625,32 @@ def main():
     hm.add_argument("--dry-run", action="store_true"); hm.add_argument("--forcar", action="store_true")
     hm.add_argument("--dump-payload", help="grava o payload do save neste arquivo")
     a = ap.parse_args()
-    t0 = time.time(); z = Zion()
+    t0 = time.time()
+
+    if a.cmd == "logout":
+        path = creds_path()
+        if os.path.exists(path) or os.path.exists(session_path()):
+            delete_creds()
+            print(f"Credenciais e sessão removidas ({path}).")
+        else:
+            print("Nenhuma credencial salva.")
+        return
+
+    if a.cmd == "whoami":
+        saved = read_creds()
+        env_u = (a.cli_user or os.environ.get("ZION_USER") or "").strip()
+        if env_u:
+            print(env_u + (" (via env/--user)" if not saved.get("username") else f" (env/--user; salvo: {saved.get('username')})"))
+        elif saved.get("username"):
+            print(saved["username"])
+        else:
+            print("Nenhum usuário salvo. Rode: python3 zion.py login")
+            raise SystemExit(1)
+        return
+
+    z = Zion(cli_user=a.cli_user)
     if a.cmd == "login":
-        z.login()
+        z.login(force_prompt=True, save_creds=True)
     elif a.cmd == "fila":
         cmd_fila(z, a.status, a.exames, a.resumo)
     elif a.cmd == "listar":

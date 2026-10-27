@@ -3,18 +3,15 @@
 Você vai operar o laboratório no Zion/Tasy via `zion.py`. Siga estas regras sem exceção.
 
 ## Configuração (LEIA PRIMEIRO)
-**Não pergunte URL, usuário, perfil nem setor ao usuário.** Eles já estão no arquivo `.env.example` deste repositório, e o `zion.py` carrega esse arquivo sozinho:
-- URL: `https://sbsj.zion-srv.com`
-- Usuário: `alisson.siqueira`
-- Perfil: `HMMCC - Laboratório - Biomédico`
-- Setor: `HMMCC - Serv. Laboratório Análises Clínicas`
+### Primeiro uso / trocar de usuário
+- URL / perfil / setor padrão vêm do `.env.example` (HMMCC). **Não** há usuário fixo no repositório.
+- **Humanos (1ª vez):** `python3 zion.py login` — pede usuário e senha (getpass, sem eco), valida, grava em `~/.config/zion-cli/credentials.json` (perm. 600). Próximos comandos reutilizam o arquivo. Trocar: `login` de novo. Sair: `logout`. Ver usuário: `whoami`.
+- **IAs / modo não-interativo:** defina `ZION_USER` e `ZION_PASSWORD` no ambiente (nunca imprima). O CLI grava o usuário no arquivo local após login ok, para não quebrar o fluxo. Nunca peça a senha no chat; se faltar credencial interativa, oriente o humano a rodar `login` no terminal.
+- Precedência: `--user`/`ZION_USER`+`ZION_PASSWORD` → arquivo salvo → prompt. Se a senha salva falhar, o CLI pede de novo (TTY) e regrava.
+- Perfil: tenta `ZION_PROFILE` (default HMMCC Biomédico); se não existir e houver um só perfil, usa esse; se vários, lista e pergunta (TTY) ou encerra listando.
+- Sessão: `~/.config/zion-cli/session.json` (não versionar). `ZION_CONFIG_DIR` redireciona a pasta (testes).
 
-A **única** coisa que falta é a senha. Para configurar:
-1. `pip install -r requirements.txt`
-2. Crie o arquivo `.env` na pasta do repositório com uma linha: `ZION_PASSWORD=...` (o usuário fornece a senha; se o terminal for interativo, o CLI também pede a senha com `getpass`).
-3. Teste: `python3 zion.py login`.
-
-Nunca imprima a senha, nunca a coloque no chat, em commits ou logs; nunca leia `.session.json` para exibir tokens. O `.env` está no `.gitignore`.
+Nunca imprima a senha, nunca a coloque no chat, em commits ou logs; nunca leia `credentials.json` / `session.json` para exibir segredos.
 - Use `python3` (pode não existir `python`).
 - Comunique-se com o usuário em português do Brasil.
 
