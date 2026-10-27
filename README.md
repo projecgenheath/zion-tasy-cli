@@ -126,6 +126,11 @@ Digita exames por sigla (a sigla do exame no Tasy: `NA+`, `K+`, `CREA`, `UREA`, 
   ```
 - **Sorologias / exames externos (BLOQUEADO):** qualquer exame cujo nome contenha "Sorologia" (ignora maiúsculas/acentos) ou cuja sigla esteja em `EXAMES_EXTERNOS_BLOQUEADOS` (`TOXG`, `TOXM`, `HBSAG`, `HCV`, `HBCM`, `HBCG`, `A-HBS`, `CMVG`, `CMVM`, `RUGE`, `RUME`, `HIV1/2`, …) é **recusado**. Sem override. **sorologia ≠ teste rápido.**
 - **Teste Rápido HIV (`HIV`):** o Teste Rápido 2 só se realiza se o Teste Rápido 1 for **REAGENTE**. Se TR1 = **NÃO REAGENTE**, o CLI grava TR2 = **NÃO REALIZADO** (mesmo que mandem NR) e avisa; se TR2 for omitido, também preenche NÃO REALIZADO.
+- **Teste Rápido Toxo (`TRTOXO`):** o campo principal *Teste Rápido Toxo IgG/IgM* tem **opções vazias** no cadastro do Tasy. Os valores ficam nos subcampos **Anticorpos IgG** e **Anticorpos IgM** (`REAGENTE` / `NÃO REAGENTE`). `TRTOXO=NÃO REAGENTE` (ou `NR`/`NEG`) propaga para IgG **e** IgM. Se forem diferentes:
+  ```bash
+  python3 zion.py resultado 123456 --exame TRTOXO.IgG=NÃO REAGENTE --exame TRTOXO.IgM=REAGENTE --dry-run
+  ```
+  Não confundir com sorologia `TOXG`/`TOXM` (bloqueadas).
 - `--forcar`: sobrescreve campos que já têm valor (sem ele, campos preenchidos são preservados).
 - `--dry-run`: mostra o que seria enviado, sem salvar.
 - `--dump-payload ARQ`: grava o payload do save (útil para depuração; **não versionar**, contém dados de paciente).

@@ -14,6 +14,7 @@ Uso:
   (nunca libera; após salvar relê via build e compara)
   Sorologias / exames externos NÃO são digitados (vão p/ outro lab).
   Testes rápidos (TRTOXO, HIV, TRS, …) continuam normais. sorologia ≠ teste rápido.
+  TRTOXO=NR propaga p/ Anticorpos IgG + IgM (campo principal sem opções).
 
 Credenciais: na 1ª vez o CLI pede usuário e senha (getpass) e grava em
 ~/.config/zion-cli/credentials.json (Windows: %APPDATA%\\zion-cli\\), permissão 600.
@@ -918,7 +919,11 @@ def msg_bloqueio_externo(it):
 
 # apelidos de campo -> trecho do nmExame do subexame
 FIELD_ALIAS = {"abo": "tiposanguineoabo", "rh": "fatorrhd", "du": "fatordu", "ci": "coombsindireto",
-               "coombsindireto": "coombsindireto", "obs": "observacao"}
+               "coombsindireto": "coombsindireto", "obs": "observacao",
+               # TRTOXO (Teste Rápido Toxo IgG/IgM): subcampos com opções
+               "igg": "anticorposigg", "igm": "anticorposigm",
+               "anticorposigg": "anticorposigg", "anticorposigm": "anticorposigm",
+               "toxoigg": "anticorposigg", "toxoigm": "anticorposigm"}
 
 
 def achar_sub(vo, nome):
@@ -986,12 +991,14 @@ def _match_opcao(txt, ops):
             return hit[0]
         return None  # ambíguo ou inexistente
     if _ausente_alias(t):
-        prefer = ["Ausente", "Negativo", "Negativa", "Neg."]
+        prefer = ["Ausente", "Negativo", "Negativa", "Neg.",
+                  "NÃO REAGENTE", "NAO REAGENTE", "Não Reagente", "Nao Reagente"]
         for p in prefer:
             hit = [o for o in ops if str(o).strip().upper() == p.upper()]
             if len(hit) == 1:
                 return hit[0]
-        hit = [o for o in ops if _slug(o) in ("ausente", "negativo", "negativa")]
+        hit = [o for o in ops if _slug(o) in ("ausente", "negativo", "negativa",
+                                              "naoreagente", "naoagente", "nr")]
         if len(hit) == 1:
             return hit[0]
         return None
@@ -1191,7 +1198,26 @@ def exame_campos(vo, campos):
                 return f"campo '{nome}' desconhecido (campos: " + "; ".join(f"{x['nmExame']} [{x.get('ieFormatoResultado')}]" for x in vo["subExams"]) + \
                     f"; apelidos: {', '.join(FIELD_ALIAS)})"
         r = valor_campo(s, txt)
-        if isinstance(r, str): return r
+        if isinstance(r, str):
+            # Campo S sem opções (ex.: TRTOXO principal): apontar os subcampos certos
+            if "(opções: )" in r or "(opções:)" in r:
+                alts = []
+                for x in vo["subExams"]:
+                    ops = [o.get("CD") for o in (x.get("optionalValues") or [])]
+                    if ops and x is not s:
+                        alts.append(f"{x.get('nmExame')}={' / '.join(ops)}")
+                if alts:
+                    # exemplo tipico TRTOXO
+                    ex = ""
+                    by = {_slug(x.get("nmExame")): x for x in vo["subExams"]}
+                    if "anticorposigg" in by and "anticorposigm" in by:
+                        ex = (" Ex.: --exame TRTOXO=NÃO REAGENTE "
+                              "(aplica IgG+IgM) ou "
+                              "--exame TRTOXO.IgG=NÃO REAGENTE "
+                              "--exame TRTOXO.IgM=NÃO REAGENTE.")
+                    r = (r + " — este campo não tem lista cadastrada; "
+                         "use os subcampos: " + "; ".join(alts) + "." + ex)
+            return r
         out[s["nrSeqExame"]] = (nome or s.get("nmExame"), r[0], r[1], s)
     return out
 
@@ -1270,6 +1296,79 @@ def completar_hiv(it, vo, campos):
         else:
             out[key2] = alvo_tr2
     return out
+
+
+def _is_trtoxo_vo(vo):
+    """Teste Rápido Toxo IgG/IgM: tem Anticorpos IgG + Anticorpos IgM."""
+    slugs = {_slug(x.get("nmExame")) for x in vo.get("subExams") or []}
+    return "anticorposigg" in slugs and "anticorposigm" in slugs
+
+
+def completar_trtoxo(it, vo, campos):
+    """TRTOXO: o campo principal ('Teste Rápido Toxo IgG/IgM') tem opções vazias no
+    cadastro do Tasy. Os valores reais ficam em 'Anticorpos IgG' e 'Anticorpos IgM'
+    (REAGENTE / NÃO REAGENTE).
+
+    Se mandarem TRTOXO=NÃO REAGENTE (sem .campo), o CLI propaga o valor para IgG e IgM.
+    Se IgG/IgM já vierem explícitos, não sobrescreve. Não confundir com sorologia
+    TOXG/TOXM (bloqueadas — vão p/ outro lab)."""
+    if not _is_trtoxo_vo(vo):
+        return campos
+    cd = str((it or {}).get("CD_EXAME") or "").upper()
+    nm = _sem_acento(str((it or {}).get("NM_EXAME") or "")).lower()
+    main = main_sub(vo)
+    main_slug = _slug((main or {}).get("nmExame") or "")
+    # só teste rápido toxo (TRTOXO), nunca sorologia
+    if "sorologia" in nm:
+        return campos
+    if cd not in ("TRTOXO",) and "testerapidotoxo" not in main_slug:
+        if "toxo" not in cd and "toxo" not in nm:
+            return campos
+        if "rapido" not in nm and "testerapidotoxo" not in main_slug:
+            return campos
+    by = {_slug(x.get("nmExame")): x for x in vo["subExams"]}
+    igg, igm = by["anticorposigg"], by["anticorposigm"]
+    out = dict(campos)
+
+    def _key_for(sub):
+        """Chave em campos que aponta p/ este subexame (via achar_sub, sem fuzzy frouxo)."""
+        for nome in list(out.keys()):
+            if nome is None:
+                continue
+            s = achar_sub(vo, nome)
+            if s and s["nrSeqExame"] == sub["nrSeqExame"]:
+                return nome
+        return None
+
+    valor = None
+    # 1) TRTOXO=valor (chave None = campo principal)
+    if None in out:
+        ops_main = [o.get("CD") for o in ((main or {}).get("optionalValues") or [])] if main else []
+        if not ops_main:
+            valor = out.pop(None)
+    # 2) TRTOXO.<nome-do-principal>=valor (só se o principal não tem opções)
+    if valor is None and main is not None:
+        k = _key_for(main)
+        if k is not None:
+            ops_main = [o.get("CD") for o in (main.get("optionalValues") or [])]
+            if not ops_main:
+                valor = out.pop(k)
+    if valor is None:
+        return out
+    k_igg = _key_for(igg)
+    k_igm = _key_for(igm)
+    applied = []
+    if k_igg is None:
+        out[igg["nmExame"]] = valor
+        applied.append("Anticorpos IgG")
+    if k_igm is None:
+        out[igm["nmExame"]] = valor
+        applied.append("Anticorpos IgM")
+    if applied:
+        print(f"  TRTOXO: '{valor}' → {' + '.join(applied)} "
+              f"(campo principal sem opções; use TRTOXO.IgG= / TRTOXO.IgM= se forem diferentes)")
+    return out
+
 
 
 # exames de vários campos: nrSeqExame do exame -> {campo: nrSeqExame do subexame}
@@ -1419,6 +1518,7 @@ def lancar(z, atend, pedidos, dry, forcar, telas=None, dump=None):
         campos = completar_crea(it, vo, campos, node)
         campos = completar_eas(vo, campos)
         campos = completar_hiv(it, vo, campos)
+        campos = completar_trtoxo(it, vo, campos)
         cs = exame_campos(vo, campos)
         if isinstance(cs, str):
             print(f"  {tag}: {cs} - não lançado"); rel.append((tag, "não suportado")); continue
