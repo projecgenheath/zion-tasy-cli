@@ -71,13 +71,13 @@ python3 zion.py whoami
 ```
 
 ### `listar AT`
-Mostra paciente, setor, leito e os exames do atendimento por fase/status.
+**Pendentes do atendimento** (não é conferência). Mostra paciente, setor, leito e os exames por fase/status.
 ```bash
 python3 zion.py listar 123456
 ```
 
 ### `digitacao AT [--dry-run] [--desde STATUS]`
-Leva os exames do atendimento até **Digitação do Resultado** (status 30), passando pelas fases intermediárias (10 Pendente coleta → 20 Material Coletado → 25 Em Análise → 26 Interfaceamento → 30).
+**Pendentes → Digitação** (não é conferência). Leva os exames do atendimento até **Digitação do Resultado** (status 30), passando pelas fases intermediárias (10 Pendente coleta → 20 Material Coletado → 25 Em Análise → 26 Interfaceamento → 30).
 Quando o sistema responde `IE_GERAR_AMOSTRA=S`, o CLI segue a mesma sequência que o navegador faz (sem gerar amostra nova). Qualquer outra resposta não mapeada faz o CLI **parar**.
 ```bash
 python3 zion.py digitacao 123456 --dry-run
@@ -90,8 +90,17 @@ Lê os valores salvos de todos os exames em Digitação.
 python3 zion.py ler 123456
 ```
 
+## Conferir ≠ Pendentes
+
+| Pedido do usuário | Comando | O que faz |
+|---|---|---|
+| "conferir / verificar resultados críticos / erros nas liberações / o que foi liberado" | `python3 zion.py conferir` | Só leitura dos exames **já liberados (status 40)**. Não digita, não salva, não altera. |
+| "o que falta digitar / pendentes / fila / o que tem pra fazer" | `python3 zion.py fila` (ou `listar AT` / `digitacao AT`) | Lista ou move exames **ainda não liberados**. |
+
+**Não misture.** `conferir` ignora qualquer exame da mesma prescrição que ainda não esteja em status 40 (ex.: HCV/HBsAg em Digitação). Quem confere **não digita nem altera nada**.
+
 ### `conferir [--de DD/MM/AAAA[ HH:MM]] [--ate ...] [--at AT] [--json]`
-**Só leitura.** Lista absolutamente todos os exames com status **Exame Liberado** (40) no período (padrão: hoje 00:00 → agora), abre cada prescrição, lê todos os campos e classifica achados em:
+**Só leitura.** Lista absolutamente todos os exames com status **Exame Liberado** (40) no período (padrão: hoje 00:00 → agora), abre cada prescrição, lê **somente** os campos dos exames em status 40 (ignora pendentes da mesma presc) e classifica achados em:
 
 - **Possível erro de digitação** — escala ×10/×100/×1000, pares de sedimento EAS inconsistentes, leucograma ≠ 100%, Ht/Hb/CHCM/VCM incoerentes, BD > BT, pH sanguíneo fora de 6,8–7,8, campo principal zerado, conclusão vs valor (Beta HCG), eTFG vazia com creatinina e idade > 12, heurística “> 10× referência”.
 - **Resultado crítico** — valores de pânico (Hb < 7; PLT < 50 mil ou > 1 milhão; leucócitos totais < 2 mil ou > 30 mil; K < 2,8 ou > 6,2; Na < 120 ou > 160; iCa < 0,8 ou > 1,6; glicose < 50 ou > 400; creatinina > 5 adulto; BT > 15 em RN; pH < 7,20 ou > 7,60; pCO₂ < 20 ou > 70; lactato > 4; RNI > 4; sorologias reagentes).

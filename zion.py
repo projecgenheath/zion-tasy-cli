@@ -593,6 +593,8 @@ def fmt_sample(a):
 
 def cmd_fila(z, status=None, exames=False, atend_only=False):
     """Fila geral (sem número de atendimento): pendentes por etapa nos últimos 4 dias."""
+    print("EXAMES PENDENTES (fila por etapa) — NÃO é conferência de liberados.")
+    print("Para auditar resultados já liberados (status 40), use: python3 zion.py conferir\n")
     phases = [status] if status else list(PHASES)
     tot_at = set()
     for ph in phases:
@@ -615,6 +617,8 @@ def cmd_fila(z, status=None, exames=False, atend_only=False):
 
 
 def cmd_listar(z, atend):
+    print("EXAMES PENDENTES do atendimento — NÃO é conferência de liberados.")
+    print("Para auditar resultados já liberados (status 40), use: python3 zion.py conferir\n")
     data = collect(z, atend)
     if data:
         r = data[0]["row"]
@@ -630,6 +634,8 @@ def cmd_listar(z, atend):
 
 
 def cmd_digitacao(z, atend, dry, desde=None):
+    print("EXAMES PENDENTES → Digitação do Resultado — NÃO é conferência de liberados.")
+    print("Para auditar resultados já liberados (status 40), use: python3 zion.py conferir\n")
     data = collect(z, atend)
     todo = [a for a in data if a["fase"] < 30]
     if desde is not None:
@@ -2424,7 +2430,11 @@ def _analisar_vo(vo, meta, achados):
 
 
 def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
-    """Auditoria só-leitura de TODOS os exames liberados (status 40) do período."""
+    """Auditoria só-leitura de TODOS os exames liberados (status 40) do período.
+
+    Ignora qualquer exame da mesma prescrição que ainda não esteja em status 40
+    (Digitação, Em Análise, etc.). Nunca salva, aprova nem altera nada.
+    """
     agora = dt.datetime.now(TZ)
     if de:
         ini = parse_dt_arg(de, fim_do_dia=False)
@@ -2445,18 +2455,23 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
         grupos.setdefault(key, {"row": r, "rows": []})["rows"].append(r)
 
     if not as_json:
-        print(f"Conferência de exames liberados (status {LIBERADO_STATUS} = {STATUS[LIBERADO_STATUS]})")
+        print("=" * 72)
+        print("CONFERÊNCIA DE RESULTADOS JÁ LIBERADOS (status 40) — só leitura.")
+        print("NÃO é lista de pendentes. Pendentes: use `fila`, `listar` ou `digitacao`.")
+        print("Nada será digitado, salvo, aprovado nem liberado.")
+        print("=" * 72)
         print(f"Período: {ini.strftime('%d/%m/%Y %H:%M:%S')} → {fim.strftime('%d/%m/%Y %H:%M:%S')} (America/Sao_Paulo)")
         if atend:
             print(f"Filtro atendimento: {atend}")
-        print(f"Amostras na fila: {len(rows)} (servidor qtTotal={total_srv}); "
+        print(f"Amostras liberadas listadas: {len(rows)} (servidor qtTotal={total_srv}); "
               f"prescrições distintas: {len(grupos)}")
-        print("(somente leitura — nada será salvo/aprovado)\n")
+        print()
 
     achados = []
     sem = []
     n_exames = 0
     n_campos = 0
+    n_ignorados = 0
     exames_com_achado = set()
 
     for (at_i, nr), g in sorted(grupos.items(), key=lambda x: (x[0][0] or 0, x[0][1] or 0)):
@@ -2477,20 +2492,51 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
                 print("   (sem itens na árvore de resultado)")
             continue
 
+        n_ign_presc = 0
         for it in sorted(t.items, key=lambda i: i.get("NR_SEQ_PRESCR") or 0):
             seq = it.get("NR_SEQ_PRESCR")
             cd = (it.get("CD_EXAME") or "").strip()
             nm_ex = (it.get("NM_EXAME") or it.get("DS_PROCEDIMENTO") or cd).strip()
             exame_label = f"{cd} — {nm_ex}" if cd else nm_ex
-            n_exames += 1
+
+            # Só status 40 (Exame Liberado). Pendentes da mesma presc ficam de fora.
+            st_it = it.get("IE_STATUS_ATEND")
+            try:
+                st_it_i = int(st_it) if st_it is not None else None
+            except (TypeError, ValueError):
+                st_it_i = None
+            if st_it_i is not None and st_it_i != LIBERADO_STATUS:
+                n_ignorados += 1
+                n_ign_presc += 1
+                continue
+
             if seq not in t.nodes:
                 if not as_json:
                     print(f"   {exame_label}: fora da árvore")
                 sem.append({"paciente": paciente, "atendimento": at_i,
                             "prescricao": nr, "exame": exame_label})
+                n_exames += 1
                 continue
-            antes = len(achados)
+
             vo = t.build(seq)["ResultVO"]
+            st_vo = vo.get("ieStatusAtend")
+            try:
+                st_vo_i = int(st_vo) if st_vo is not None else None
+            except (TypeError, ValueError):
+                st_vo_i = None
+            # Confirma no VO: se ainda não for 40, ignora (não confere pendente).
+            if st_vo_i is not None and st_vo_i != LIBERADO_STATUS:
+                n_ignorados += 1
+                n_ign_presc += 1
+                continue
+            if st_it_i is None and st_vo_i is None:
+                # Sem status em item nem VO — não assume liberado.
+                n_ignorados += 1
+                n_ign_presc += 1
+                continue
+
+            n_exames += 1
+            antes = len(achados)
             node = t.nodes[seq][1]
             idade_n = _idade_anos(node.get("DT_NASCIMENTO"), agora)
             if idade_n is not None:
@@ -2517,13 +2563,17 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
                         resumo += f" {s.get('dsUnidadeMedida')}"
                 print(f"   {cd:<8} seq {seq:<4} {nm_ex[:40]:<40} = {resumo}  [status {vo.get('ieStatusAtend')}]")
 
+        if not as_json and n_ign_presc:
+            print(f"   ({n_ign_presc} exame(s) da mesma prescrição ainda não liberados — ignorados)")
+
     erros = [a for a in achados if a["tipo"] == "digitacao"]
     crits = [a for a in achados if a["tipo"] == "critico"]
     totais = {
         "prescricoes": len(grupos),
-        "amostras_fila": len(rows),
+        "amostras_liberadas": len(rows),
         "exames": n_exames,
         "campos": n_campos,
+        "ignorados_nao_liberados": n_ignorados,
         "erros_digitacao": len(erros),
         "criticos": len(crits),
         "sem_achados": len(sem),
@@ -2564,13 +2614,18 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
 
     print("\n## Totais")
     print(f"  Prescrições conferidas: {totais['prescricoes']}")
-    print(f"  Amostras na fila:       {totais['amostras_fila']}")
-    print(f"  Exames conferidos:      {totais['exames']}")
+    print(f"  Amostras liberadas:     {totais['amostras_liberadas']}")
+    print(f"  Exames conferidos:      {totais['exames']}  (somente status {LIBERADO_STATUS})")
     print(f"  Campos conferidos:      {totais['campos']}")
+    print(f"  Não liberados ignorados:{totais['ignorados_nao_liberados']}  "
+          f"(exames da mesma presc ainda sem status 40)")
     print(f"  Erros de digitação:     {totais['erros_digitacao']}")
     print(f"  Resultados críticos:    {totais['criticos']}")
     print(f"  Sem achados:            {totais['sem_achados']}")
+    if n_ignorados:
+        print(f"\n{n_ignorados} exame(s) da mesma prescrição ainda não liberados (ignorados).")
     return {"totais": totais, "erros_digitacao": erros, "criticos": crits, "sem_achados": sem}
+
 
 
 

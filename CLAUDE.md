@@ -22,6 +22,15 @@ Quando perguntarem "quantos pacientes/exames pendentes", "o que tem na fila", et
 - `python3 zion.py fila --status 30 --exames`: amostras e exames de uma etapa (ex.: tudo que está esperando digitação).
 Janela: pedidos dos últimos 4 dias.
 
+## Conferir ≠ Pendentes
+
+| Pedido do usuário | Comando | O que faz |
+|---|---|---|
+| "conferir / verificar resultados críticos / erros nas liberações / o que foi liberado" | `python3 zion.py conferir` | Só leitura dos exames **já liberados (status 40)**. Não digita, não salva, não altera. |
+| "o que falta digitar / pendentes / fila / o que tem pra fazer" | `python3 zion.py fila` (ou `listar AT` / `digitacao AT`) | Lista ou move exames **ainda não liberados**. |
+
+**Não misture.** `conferir` ignora qualquer exame da mesma prescrição que ainda não esteja em status 40 (ex.: HCV/HBsAg em Digitação). Quem confere **não digita nem altera nada**.
+
 ## Conferir liberados (erros de digitação / críticos)
 Quando pedirem para "verificar resultados críticos", "conferir liberações", "ver se digitou errado" (ex. plaquetas 200.000.000), use:
 ```bash
@@ -31,6 +40,7 @@ python3 zion.py conferir --at AT
 python3 zion.py conferir --json
 ```
 - Cobre **absolutamente todos** os exames com status **40 = Exame Liberado** do período (paginação completa; todas as prescrições, exames e campos).
+- Exames da mesma presc com outro status (30 Digitação, etc.) são **ignorados** e contados à parte — não são pendentes da conferência.
 - **Só leitura** — não salva, não aprova, não libera.
 - Classifica em **possível erro de digitação** e **resultado crítico**; termina com totais e a lista de exames sem achados.
 - Reporte ao usuário TODOS os achados (paciente, AT, presc, exame, campo, valor, motivo, valor provável se for escala).
