@@ -69,6 +69,7 @@ Digita exames por sigla (a sigla do exame no Tasy: `NA+`, `K+`, `CREA`, `UREA`, 
   --exame BILI.total=0.73 --exame BILI.direta=0.21
   ```
   Se `BILI.indireta` não for informada, o CLI calcula total − direta. O próprio Zion recalcula a indireta; aceite o valor do sistema.
+- **CREA / eTFG:** se o layout tiver campo de idade e o paciente tiver > 12 anos, o CLI preenche a idade (pela data de nascimento) e a eTFG (MDRD) sozinho. Use `CREA.idade=` / `CREA.etfg=` só para sobrescrever.
 - **Listas/texto** (tipagem, Coombs, EAS...): o valor precisa existir na lista do sistema; se não existir, o CLI recusa e mostra as opções válidas.
   ```bash
   python3 zion.py resultado 123456 --exame GP-TIP.abo=B --exame GP-TIP.rh=Positivo --exame COOD=Negativo

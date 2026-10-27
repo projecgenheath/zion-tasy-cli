@@ -668,18 +668,121 @@ def completar_bili(campos):
     return campos
 
 
+def parse_nasc(x):
+    """Data de nascimento (date local TZ) a partir do Instant do nó/VO."""
+    if isinstance(x, dict):
+        v = x.get("value", x.get("dados"))
+    else:
+        v = x
+    if not v:
+        return None
+    s = str(v).replace("Z", "+00:00")
+    try:
+        return dt.datetime.fromisoformat(s).astimezone(TZ).date()
+    except ValueError:
+        return None
+
+
+def idade_anos(nasc):
+    if not nasc:
+        return None
+    today = dt.datetime.now(TZ).date()
+    return today.year - nasc.year - ((today.month, today.day) < (nasc.month, nasc.day))
+
+
+def achar_campo_idade_crea(vo):
+    """Campo de idade do layout CREA (ex.: 'Idade (Sexo Feminino > 18 anos)')."""
+    hits = [x for x in vo["subExams"]
+            if _slug(x.get("nmExame", "")).startswith("idade")
+            and x.get("ieFormatoResultado") in ("V", "DV")]
+    return hits[0] if hits else None
+
+
+def achar_campo_etfg(vo):
+    hits = [x for x in vo["subExams"]
+            if "etfg" in _slug(x.get("nmExame", ""))
+            or "taxadefiltracaoglomerular" in _slug(x.get("nmExame", ""))]
+    return hits[0] if hits else None
+
+
+def etfg_mdrd(crea, idade, sexo):
+    """MDRD original (186). Ex.: CREA=2,71 idade=77 sexo F -> 18,1."""
+    if crea is None or idade is None or crea <= 0 or idade <= 0:
+        return None
+    g = 186.0 * (float(crea) ** -1.154) * (float(idade) ** -0.203)
+    if str(sexo or "").upper().startswith("F"):
+        g *= 0.742
+    return round(g + 1e-12, 1)
+
+
+def completar_crea(it, vo, campos, node):
+    """CREA: se o layout tem campo de idade e o paciente tem > 12 anos, preenche a idade
+    (a eTFG com ieCampoCalculo=A é recalculada; o CLI também envia o MDRD, como no hemo).
+    Se o usuário já passou idade ou eTFG, respeita."""
+    if str(it.get("CD_EXAME", "")).upper() != "CREA":
+        return campos
+    idade_sub = achar_campo_idade_crea(vo)
+    if not idade_sub:
+        return campos
+    nasc = parse_nasc((node or {}).get("DT_NASCIMENTO")) or parse_nasc(vo.get("dtNascimento"))
+    anos = idade_anos(nasc)
+    if anos is None or anos <= 12:
+        return campos
+    campos = dict(campos)
+    def _user_passou(sub):
+        for nome in campos:
+            if nome is None:
+                continue
+            s = achar_sub(vo, nome)
+            if s and s["nrSeqExame"] == sub["nrSeqExame"]:
+                return True
+        return False
+    if not _user_passou(idade_sub):
+        campos["idade"] = str(int(anos))
+        print(f"  CREA: idade preenchida automaticamente = {int(anos)}"
+              + (f" (nasc. {nasc.strftime('%d/%m/%Y')})" if nasc else ""))
+    etfg_sub = achar_campo_etfg(vo)
+    if etfg_sub and etfg_sub.get("ieCampoCalculo") == "A" and not _user_passou(etfg_sub):
+        if None in campos:
+            try:
+                crea_val = parse_val(campos[None])[0]
+            except Exception:
+                crea_val = None
+        else:
+            crea_val = sub_val(main_sub(vo) or {})
+        try:
+            idade_val = parse_val(campos["idade"])[0] if "idade" in campos else float(anos)
+        except Exception:
+            idade_val = float(anos)
+        sexo = vo.get("sexo") or (node or {}).get("IE_SEXO")
+        etfg = etfg_mdrd(crea_val, idade_val, sexo)
+        if etfg is not None:
+            dec = etfg_sub.get("qtDecimais") or 1
+            campos["etfg"] = f"{etfg:.{dec}f}"
+            print(f"  CREA: eTFG calculada (MDRD) = {campos['etfg']}")
+    return campos
+
+
+def achar_item_digitacao(telas, chave):
+    """Prefere o item em Digitação (30) quando há a mesma sigla em várias prescrições."""
+    hits = []
+    for t in telas:
+        for it in t.items:
+            if str(it.get("CD_EXAME", "")).upper() == str(chave).upper() or str(it.get("NR_SEQ_EXAME")) == str(chave):
+                hits.append((t, it))
+    if not hits:
+        return None
+    dig = [h for h in hits if h[1].get("IE_STATUS_ATEND") == 30]
+    return (dig or hits)[0]
+
+
 def lancar(z, atend, pedidos, dry, forcar, telas=None, dump=None):
     """pedidos: lista de (chave, campo_ou_None, texto_valor). Só lança no que existir em Digitação."""
     if telas is None:
         data, telas = abrir_telas(z, atend, write=not dry)
     grupos = {}
     for chave, campo, txt in pedidos:
-        hit = None
-        for t in telas:
-            for it in t.items:
-                if str(it.get("CD_EXAME", "")).upper() == str(chave).upper() or str(it.get("NR_SEQ_EXAME")) == str(chave):
-                    hit = (t, it); break
-            if hit: break
+        hit = achar_item_digitacao(telas, chave)
         if not hit:
             print(f"  {chave}: não existe em Digitação neste atendimento - ignorado"); continue
         g = grupos.setdefault(id(hit[1]), [chave, hit[0], hit[1], {}])
@@ -692,6 +795,8 @@ def lancar(z, atend, pedidos, dry, forcar, telas=None, dump=None):
             print(f"  {tag}: status {it.get('IE_STATUS_ATEND')} - não está em Digitação, ignorado"); continue
         if nse in MULTI and 575 == nse: campos = completar_bili(campos)
         vo = t.clicar(seq, nse)["ResultVO"]
+        node = t.nodes[seq][1] if seq in t.nodes else {}
+        campos = completar_crea(it, vo, campos, node)
         cs = exame_campos(vo, campos)
         if isinstance(cs, str):
             print(f"  {tag}: {cs} - não lançado"); rel.append((tag, "não suportado")); continue
