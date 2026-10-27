@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""zion.py - CLI para o Zion/Tasy 5.04 (HMMCC) sem navegador.
+"""zion.py - CLI para o Zion/Tasy 5.04 sem navegador.
 
 Uso:
-  python zion.py login                       # testa login + perfil
-  python zion.py listar ATENDIMENTO          # linhas/status por fase
-  python zion.py digitacao ATENDIMENTO [--dry-run] [--desde STATUS]
-  python zion.py ler ATENDIMENTO              # valores salvos dos exames em Digitação
-  python zion.py resultado AT --exame NA+=134.9 [--exame ...] [--dry-run] [--forcar]
-  python zion.py gaso AT --na 134.9 --k 4.37 --ica 1.08 --cl 105.7 [--glu --lac --ph ...] [--dry-run] [--forcar]
+  python3 zion.py login                       # testa login + perfil
+  python3 zion.py fila [--status N] [--exames] [--resumo]  # fila geral, sem atendimento
+  python3 zion.py listar ATENDIMENTO          # linhas/status por fase
+  python3 zion.py digitacao ATENDIMENTO [--dry-run] [--desde STATUS]
+  python3 zion.py ler ATENDIMENTO              # valores salvos dos exames em Digitação
+  python3 zion.py resultado AT --exame NA+=134.9 [--exame ...] [--dry-run] [--forcar]
+  python3 zion.py gaso AT --na 134.9 --k 4.37 --ica 1.08 --cl 105.7 [--glu --lac --ph ...] [--dry-run] [--forcar]
   (nunca libera; após salvar relê via build e compara)
 
 Senha: variável de ambiente ZION_PASSWORD (nunca é impressa).
@@ -16,13 +17,36 @@ Sessão: .session.json (chmod 600) ao lado deste arquivo; renova/reloga sozinho.
 import argparse, copy, difflib, json, os, re, sys, time, datetime as dt
 import requests
 
-HOST = "https://sbsj.zion-srv.com"
+def _load_env():
+    """Carrega .env.example (URL/usuário/perfil já preenchidos) e depois .env (senha). Variáveis já definidas têm prioridade."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    vals = {}
+    for name in (".env.example", ".env"):
+        fp = os.path.join(here, name)
+        if not os.path.exists(fp):
+            continue
+        for line in open(fp, encoding="utf-8"):
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            v = v.strip().strip('"').strip("'")
+            if v:
+                vals[k.strip()] = v
+    for k, v in vals.items():
+        os.environ.setdefault(k, v)
+
+_load_env()
+
+HOST = os.environ.get("ZION_URL", "").rstrip("/")
 API = HOST + "/TasyAppServer/resources"
-USER = os.environ.get("ZION_USER", "alisson.siqueira")
+USER = os.environ.get("ZION_USER", "")
 SCOPE = "WTASY"
-PERFIL_NOME = "HMMCC - Laboratório - Biomédico"
-SETOR_NOME = "HMMCC - Serv. Laboratório Análises Clínicas"
+PERFIL_NOME = os.environ.get("ZION_PROFILE", "")
+SETOR_NOME = os.environ.get("ZION_SETOR", "")
 HERE = os.path.dirname(os.path.abspath(__file__))
+if not (HOST and USER and PERFIL_NOME) and __name__ == "__main__":
+    sys.exit("Configuração não encontrada: o arquivo .env.example deve estar na mesma pasta do zion.py.")
 SESSION_FILE = os.path.join(HERE, ".session.json")
 TPL = json.load(open(os.path.join(HERE, "templates.json"), encoding="utf-8"))
 TZ = dt.timezone(dt.timedelta(hours=-3))
@@ -89,8 +113,11 @@ class Zion:
 
     def login(self):
         pw = os.environ.get("ZION_PASSWORD")
+        if not pw and sys.stdin.isatty():
+            import getpass
+            pw = getpass.getpass(f"Senha do Zion para {USER}: ")
         if not pw:
-            sys.exit("ZION_PASSWORD não definida")
+            sys.exit("Falta só a senha: crie o arquivo .env com ZION_PASSWORD=sua_senha (ou exporte ZION_PASSWORD). URL, usuário e perfil já vêm do .env.example.")
         self.s.cookies.clear(); self.s.headers.pop("Authorization", None); self.s.headers.pop("crsfToken", None)
         self.sess = {}
         body = {"username": USER, "password": pw, "computerName": None, "osUsername": None, "scope": SCOPE,
