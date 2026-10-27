@@ -1,52 +1,28 @@
 #!/usr/bin/env python3
-"""zion.py - CLI para o Zion/Tasy 5.04 sem navegador.
+"""zion.py - CLI para o Zion/Tasy 5.04 (HMMCC) sem navegador.
 
 Uso:
-  python3 zion.py login                       # testa login + perfil
-  python3 zion.py fila [--status N] [--exames] [--resumo]  # fila geral, sem atendimento
-  python3 zion.py listar ATENDIMENTO          # linhas/status por fase
-  python3 zion.py digitacao ATENDIMENTO [--dry-run] [--desde STATUS]
-  python3 zion.py ler ATENDIMENTO              # valores salvos dos exames em Digitação
-  python3 zion.py resultado AT --exame NA+=134.9 [--exame ...] [--dry-run] [--forcar]
-  python3 zion.py gaso AT --na 134.9 --k 4.37 --ica 1.08 --cl 105.7 [--glu --lac --ph ...] [--dry-run] [--forcar]
+  python zion.py login                       # testa login + perfil
+  python zion.py listar ATENDIMENTO          # linhas/status por fase
+  python zion.py digitacao ATENDIMENTO [--dry-run] [--desde STATUS]
+  python zion.py ler ATENDIMENTO              # valores salvos dos exames em Digitação
+  python zion.py resultado AT --exame NA+=134.9 [--exame ...] [--dry-run] [--forcar]
+  python zion.py gaso AT --na 134.9 --k 4.37 --ica 1.08 --cl 105.7 [--glu --lac --ph ...] [--dry-run] [--forcar]
   (nunca libera; após salvar relê via build e compara)
 
 Senha: variável de ambiente ZION_PASSWORD (nunca é impressa).
 Sessão: .session.json (chmod 600) ao lado deste arquivo; renova/reloga sozinho.
 """
-import argparse, copy, json, os, sys, time, datetime as dt
+import argparse, copy, difflib, json, os, re, sys, time, datetime as dt
 import requests
 
-def _load_env():
-    """Carrega .env.example (URL/usuário/perfil já preenchidos) e depois .env (senha). Variáveis já definidas têm prioridade."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    vals = {}
-    for name in (".env.example", ".env"):
-        fp = os.path.join(here, name)
-        if not os.path.exists(fp):
-            continue
-        for line in open(fp, encoding="utf-8"):
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            v = v.strip().strip('"').strip("'")
-            if v:
-                vals[k.strip()] = v
-    for k, v in vals.items():
-        os.environ.setdefault(k, v)
-
-_load_env()
-
-HOST = os.environ.get("ZION_URL", "").rstrip("/")
+HOST = "https://sbsj.zion-srv.com"
 API = HOST + "/TasyAppServer/resources"
-USER = os.environ.get("ZION_USER", "")
+USER = os.environ.get("ZION_USER", "alisson.siqueira")
 SCOPE = "WTASY"
-PERFIL_NOME = os.environ.get("ZION_PROFILE", "")
-SETOR_NOME = os.environ.get("ZION_SETOR", "")
+PERFIL_NOME = "HMMCC - Laboratório - Biomédico"
+SETOR_NOME = "HMMCC - Serv. Laboratório Análises Clínicas"
 HERE = os.path.dirname(os.path.abspath(__file__))
-if not (HOST and USER and PERFIL_NOME) and __name__ == "__main__":
-    sys.exit("Configuração não encontrada: o arquivo .env.example deve estar na mesma pasta do zion.py.")
 SESSION_FILE = os.path.join(HERE, ".session.json")
 TPL = json.load(open(os.path.join(HERE, "templates.json"), encoding="utf-8"))
 TZ = dt.timezone(dt.timedelta(hours=-3))
@@ -113,11 +89,8 @@ class Zion:
 
     def login(self):
         pw = os.environ.get("ZION_PASSWORD")
-        if not pw and sys.stdin.isatty():
-            import getpass
-            pw = getpass.getpass(f"Senha do Zion para {USER}: ")
         if not pw:
-            sys.exit("Falta só a senha: crie o arquivo .env com ZION_PASSWORD=sua_senha (ou exporte ZION_PASSWORD). URL, usuário e perfil já vêm do .env.example.")
+            sys.exit("ZION_PASSWORD não definida")
         self.s.cookies.clear(); self.s.headers.pop("Authorization", None); self.s.headers.pop("crsfToken", None)
         self.sess = {}
         body = {"username": USER, "password": pw, "computerName": None, "osUsername": None, "scope": SCOPE,
@@ -258,7 +231,7 @@ def plan_sample(z, amostra, cur, target=30):
         return []
     lst = ",".join(map(str, seqs)); dsql = f" and c.nr_sequencia in ({lst})"
     sqlitem = "".join(f"{s} " for s in seqs)
-    user = z.sess.get("nmUsuario") or USER
+    user = z.sess.get("nmUsuario") or "alisson.siqueir"
     steps = []
     while cur in NEXT and cur < target:
         nxt = NEXT[cur]; sn = str(nxt)
@@ -300,15 +273,15 @@ def check_response(path, resp):
         return
     v = lambda k: (resp.get(k) or {}).get("valor") if isinstance(resp.get(k), dict) else resp.get(k)
     # QT_EXAME_SUSP_P conta itens suspensos da PRESCRIÇÃO inteira. Esses itens não aparecem na fila de
-    # Exames Pendentes (só movemos linhas que a própria fila trouxe) e o navegador segue sem diálogo.
-    # Então só avisa e continua.
+    # Exames Pendentes (só movemos linhas que a própria fila trouxe), e o navegador segue normalmente sem
+    # diálogo (conferido no 809603, prescr 5808623 com QT_EXAME_SUSP_P=1). Então só avisa e continua.
     if path.endswith("28710") and str(v("QT_EXAME_SUSP_P") or "0") != "0":
         print(f"  (aviso: prescrição tem {v('QT_EXAME_SUSP_P')} exame(s) suspenso(s) fora da fila - igual ao navegador, segue)")
     if path.endswith("33538") and v("DS_EXAMES_MEST_P"):
         raise RuntimeError("33538 pediu data da menstruação (DS_EXAMES_MEST_P) - parei")
     if path.endswith("28842") and v("DS_MENSAGEM_P"):
         raise RuntimeError(f"28842 mensagem: {v('DS_MENSAGEM_P')} - parei")
-    # HAR <n> (amostra <n>, COOD/GP-TIP): com IE_GERAR_AMOSTRA=S a tela não abre diálogo nem gera
+    # HAR 808887 (amostra 1167258, COOD/GP-TIP): com IE_GERAR_AMOSTRA=S a tela não abre diálogo nem gera
     # amostra; segue a mesma sequência (55029, Pardini, UPDATE_LAST_DOSE_MEDIC, labUpdateStageSample).
     if path.endswith("690226") and resp.get("IE_GERAR_AMOSTRA") == "S":
         print("  (690226 IE_GERAR_AMOSTRA=S - igual ao navegador: segue sem gerar amostra)")
@@ -566,7 +539,7 @@ def cmd_ler(z, atend):
 
 
 def ds_payload(vo, env):
-    """Reproduz o save da tela (HAR <n>/<n>): subexames V/DV vão com qtResultado em TEXTO
+    """Reproduz o save da tela (HAR 808861/803328): subexames V/DV vão com qtResultado em TEXTO
     ("5.01", "0") e dsResultado=None; subexames D/DL vão com qtResultado=None e dsResultado como está
     ('' quando vazio). O 'exam' espelha o subexame principal. env = {nrSeqExame: float}."""
     novo = norm_inst(copy.deepcopy(vo))
@@ -619,6 +592,87 @@ def achar_sub(vo, nome):
     return hits[0] if len(hits) == 1 else None
 
 
+def _plus_count(txt):
+    """Se txt for uma graduação em cruzes, devolve 1..4; senão None."""
+    t = str(txt).strip().lower().replace(" ", "")
+    if re.fullmatch(r"\+{1,4}", t):
+        return len(t)
+    m = re.fullmatch(r"([1-4])\+", t) or re.fullmatch(r"\+([1-4])", t)
+    if m:
+        return int(m.group(1))
+    # "positivo+", "positivo ++", "pos +", "reagente ++"
+    m = re.fullmatch(r"(?:positivo|pos|reagente)\+{1,4}", t)
+    if m:
+        return t.count("+")
+    m = re.fullmatch(r"(?:positivo|pos|reagente)([1-4])\+", t)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _ausente_alias(txt):
+    t = str(txt).strip().lower()
+    if t in ("-", "--", "---", "–", "—"):
+        return True
+    return _slug(t) in ("ausente", "negativo", "negativa", "neg", "nao", "naoagente", "naoreagente", "nr")
+
+
+def _match_opcao(txt, ops):
+    """Casa txt com uma opção da lista. Ordem: exato > alias +/- > slug > fuzzy.
+    Nunca deixa '++' virar '+' (slug de '+' é vazio). Rejeita ambíguo."""
+    t = str(txt).strip()
+    if not t or not ops:
+        return None
+    # 1) texto exato (case-insensitive) — crítico para +/++/+++/++++
+    ex = [o for o in ops if str(o).strip().upper() == t.upper()]
+    if len(ex) == 1:
+        return ex[0]
+    if len(ex) > 1:
+        return None
+    # 2) aliases de cruzes / ausente / negativo
+    nplus = _plus_count(t)
+    if nplus is not None:
+        target = "+" * nplus
+        hit = [o for o in ops if str(o).strip() == target]
+        if len(hit) == 1:
+            return hit[0]
+        # cilindros/cristais: "Hemáticos ++ | 4+", "Hialinos ++|4+", etc.
+        hit = [o for o in ops if ("+" * nplus) in str(o) and ("+" * (nplus + 1)) not in str(o).replace("4+", "")]
+        # filtrar opções cujo trecho de cruzes é exatamente nplus (antes de | ou fim)
+        def _cruzes_em(o):
+            m = re.search(r"(\+{1,4})", str(o))
+            return len(m.group(1)) if m else None
+        hit = [o for o in ops if _cruzes_em(o) == nplus]
+        if len(hit) == 1:
+            return hit[0]
+        return None  # ambíguo ou inexistente
+    if _ausente_alias(t):
+        prefer = ["Ausente", "Negativo", "Negativa", "Neg."]
+        for p in prefer:
+            hit = [o for o in ops if str(o).strip().upper() == p.upper()]
+            if len(hit) == 1:
+                return hit[0]
+        hit = [o for o in ops if _slug(o) in ("ausente", "negativo", "negativa")]
+        if len(hit) == 1:
+            return hit[0]
+        return None
+    # 3) slug exato (só se o slug do input não for vazio — evita '+' casar com tudo)
+    st = _slug(t)
+    if st:
+        hit = [o for o in ops if _slug(o) == st]
+        if len(hit) == 1:
+            return hit[0]
+        # 4) fuzzy (ligeiramente turvo -> Ligeiramento Turvo)
+        scored = sorted(
+            ((difflib.SequenceMatcher(None, st, _slug(o)).ratio(), o) for o in ops),
+            key=lambda x: -x[0],
+        )
+        scored = [(r, o) for r, o in scored if r >= 0.84]
+        if scored and (len(scored) == 1 or scored[0][0] >= scored[1][0] + 0.04):
+            return scored[0][1]
+    return None
+
+
 def valor_campo(s, txt):
     """-> (valor, dec) ou str de erro. V/DV: float; S: opção da lista; D/DL: texto livre."""
     fmt = s.get("ieFormatoResultado")
@@ -628,11 +682,158 @@ def valor_campo(s, txt):
         return f, dec
     if fmt == "S":
         ops = [o.get("CD") for o in (s.get("optionalValues") or [])]
-        m = [o for o in ops if str(o).strip().upper() == str(txt).strip().upper()] or ([o for o in ops if _slug(o) == _slug(txt)] if _slug(txt) else [])
-        if not m: return f"'{txt}' inválido para {s.get('nmExame')} (opções: {' / '.join(ops)})"
-        return m[0], 0
+        m = _match_opcao(txt, ops)
+        if m is None:
+            return f"'{txt}' inválido para {s.get('nmExame')} (opções: {' / '.join(ops)})"
+        return m, 0
     if fmt in ("D", "DL"): return str(txt), 0
     return f"formato {fmt} não suportado"
+
+
+# ---- EAS (URN1): pares de sedimento e aliases à prova de IA ----
+# Papel "13.000/mL" -> campo simples=13, campo (x1000)=13000.
+# Se a IA mandar 13000 no simples, a tela/servidor multiplica e grava 13000000.
+EAS_SED_PAIRS = [
+    # (slug do simples, slug do x1000, rótulo p/ log)
+    ("celulasepiteliais", "celulasepiteliaisx1000", "Células epiteliais"),
+    ("leucocitospiocitos", "leucocitosx1000", "Leucócitos (Piócitos)"),
+    ("hemacias", "hemaciasx1000", "Hemácias"),
+]
+# apelidos -> slug canônico do campo (simples ou x1000)
+EAS_SED_ALIAS = {
+    "celulas": "celulasepiteliais",
+    "celula": "celulasepiteliais",
+    "celulasepiteliais": "celulasepiteliais",
+    "celulasepiteliaisx1000": "celulasepiteliaisx1000",
+    "epiteliais": "celulasepiteliais",
+    "leucocitosml": "leucocitospiocitos",
+    "leucocitospiocitos": "leucocitospiocitos",
+    "leucocitosx1000": "leucocitosx1000",
+    "piocitos": "leucocitospiocitos",
+    "piocito": "leucocitospiocitos",
+    "hemacias": "hemacias",
+    "hemaciasml": "hemacias",
+    "hemaciasx1000": "hemaciasx1000",
+    "he": "hemacias",
+}
+
+
+def _eas_parse_count(txt):
+    """Aceita 13, 13000, 13.000, 13.000/mL, 13,000/ml."""
+    s = str(txt).strip().lower()
+    s = re.sub(r"\s*/\s*(ml|µl|ul)\s*$", "", s).strip()
+    s = s.replace(" ", "")
+    if re.fullmatch(r"\d{1,3}(\.\d{3})+", s):
+        return float(s.replace(".", ""))
+    if re.fullmatch(r"\d{1,3}(,\d{3})+", s):
+        return float(s.replace(",", ""))
+    return parse_val(s)[0]
+
+
+def _eas_looks_numeric(txt):
+    try:
+        _eas_parse_count(txt)
+        return True
+    except Exception:
+        return False
+
+
+def _eas_pair_values(simple_txt=None, x1000_txt=None):
+    """Devolve (simples, x1000, per_ml) normalizados a partir de qualquer lado do par."""
+    per_ml = None
+    if simple_txt is not None:
+        v = _eas_parse_count(simple_txt)
+        # >=1000 no simples = a IA mandou o /mL no campo errado
+        per_ml = v if v >= 1000 else v * 1000
+    if x1000_txt is not None:
+        v = _eas_parse_count(x1000_txt)
+        if per_ml is None:
+            per_ml = v  # x1000 é sempre a contagem /mL
+        else:
+            # se os dois vieram, prefere o que parece /mL cheio
+            if v >= 1000:
+                per_ml = v
+    if per_ml is None:
+        raise ValueError("par de sedimento sem valor")
+    per_ml = int(round(float(per_ml)))
+    return per_ml / 1000.0, float(per_ml), per_ml
+
+
+def _eas_sub_by_slug(vo):
+    return {_slug(x.get("nmExame")): x for x in vo["subExams"]}
+
+
+def _is_eas_vo(vo):
+    slugs = {_slug(x.get("nmExame")) for x in vo["subExams"]}
+    return "celulasepiteliais" in slugs and "celulasepiteliaisx1000" in slugs
+
+
+def completar_eas(vo, campos):
+    """Normaliza EAS/URN1: aliases, Leucócitos numérico->Piócitos, pares simples/x1000."""
+    if not _is_eas_vo(vo):
+        return campos
+    by = _eas_sub_by_slug(vo)
+    # remapeia chaves (inclui None? não) para slug canônico
+    raw = {}
+    for nome, txt in campos.items():
+        if nome is None:
+            raw[None] = txt
+            continue
+        key = _slug(nome)
+        # Leucócitos (dipstick S) vs Leucócitos (Piócitos) DV:
+        # número -> sedimento; +/Ausente -> fita.
+        if key in ("leucocitos", "leucocito"):
+            if _eas_looks_numeric(txt) and not (_plus_count(txt) or _ausente_alias(txt)):
+                key = "leucocitospiocitos"
+                print(f"  EAS: 'Leucócitos' numérico={txt} -> Leucócitos (Piócitos) (sedimento)")
+            else:
+                key = "leucocitos"  # dipstick
+        else:
+            key = EAS_SED_ALIAS.get(key, key)
+        raw[key] = txt
+    # normaliza cada par presente
+    out = dict(raw)
+    for simple_s, x1000_s, label in EAS_SED_PAIRS:
+        if simple_s not in by or x1000_s not in by:
+            continue
+        if simple_s not in raw and x1000_s not in raw:
+            continue
+        try:
+            simp, x1k, per_ml = _eas_pair_values(raw.get(simple_s), raw.get(x1000_s))
+        except Exception as e:
+            print(f"  EAS: par {label} inválido ({e}) - mantido como veio")
+            continue
+        # grava com o nmExame real p/ achar_sub casar 1:1
+        out[by[simple_s]["nmExame"]] = num_txt(simp)
+        out[by[x1000_s]["nmExame"]] = num_txt(x1k)
+        out.pop(simple_s, None)
+        out.pop(x1000_s, None)
+        print(f"  EAS: {label}: {num_txt(simp)} | x1000: {num_txt(x1k)} (={per_ml}/mL ≈ {per_ml/1000:g}.000/mL)")
+    # dipstick Leucócitos: se ficou como slug, troca p/ nmExame
+    if "leucocitos" in out and "leucocitos" in by:
+        out[by["leucocitos"]["nmExame"]] = out.pop("leucocitos")
+    return out
+
+
+def eas_print_readback(vo):
+    """Imprime os pares de sedimento de forma legível p/ a IA se autocriticar."""
+    if not _is_eas_vo(vo):
+        return
+    by = _eas_sub_by_slug(vo)
+    for simple_s, x1000_s, label in EAS_SED_PAIRS:
+        a, b = by.get(simple_s), by.get(x1000_s)
+        if not a or not b:
+            continue
+        va, vb = sub_val(a), sub_val(b)
+        if va is None and vb is None:
+            continue
+        try:
+            per_ml = int(round(float(vb))) if vb is not None else int(round(float(va) * 1000))
+        except Exception:
+            per_ml = vb
+        # 21000 -> 21.000/mL
+        per_txt = f"{per_ml:,}".replace(",", ".") + "/mL" if isinstance(per_ml, int) else f"{per_ml}/mL"
+        print(f"  {label}: {vtxt(va) if va is not None else '-'} | x1000: {vtxt(vb) if vb is not None else '-'} (={per_txt})")
 
 
 def exame_campos(vo, campos):
@@ -743,6 +944,7 @@ def completar_crea(it, vo, campos, node):
               + (f" (nasc. {nasc.strftime('%d/%m/%Y')})" if nasc else ""))
     etfg_sub = achar_campo_etfg(vo)
     if etfg_sub and etfg_sub.get("ieCampoCalculo") == "A" and not _user_passou(etfg_sub):
+        # creatinina: valor que vamos gravar (campo principal) ou o já salvo
         if None in campos:
             try:
                 crea_val = parse_val(campos[None])[0]
@@ -797,6 +999,7 @@ def lancar(z, atend, pedidos, dry, forcar, telas=None, dump=None):
         vo = t.clicar(seq, nse)["ResultVO"]
         node = t.nodes[seq][1] if seq in t.nodes else {}
         campos = completar_crea(it, vo, campos, node)
+        campos = completar_eas(vo, campos)
         cs = exame_campos(vo, campos)
         if isinstance(cs, str):
             print(f"  {tag}: {cs} - não lançado"); rel.append((tag, "não suportado")); continue
@@ -808,7 +1011,7 @@ def lancar(z, atend, pedidos, dry, forcar, telas=None, dump=None):
             print(f"  {tag}: já tem valor diferente salvo ({'; '.join(f'{n}: {vtxt(o)} ≠ {vtxt(f)}' for n, o, f in conf)}) - não sobrescrevi (use --forcar)")
             rel.append((tag, "já tinha valor")); continue
         fora = [n for sq, (n, f, dec, s) in cs.items() if s.get("visible") is False and s.get("lineNumber") is None]
-        if fora:   # ex.: TAP: campo principal fora do layout do formato -> o save devolve saved=True mas grava 0
+        if fora:   # ex.: TAP (formato 2524): campo principal fora do layout -> o save devolve saved=True mas grava 0
             print(f"  {tag}: AVISO: {', '.join(fora)} não está no formato de digitação da tela (visible=False, sem linha); "
                   "o servidor costuma ignorar esse campo - confira a releitura")
         env = {sq: f for sq, (n, f, dec, s) in cs.items()}
@@ -817,6 +1020,16 @@ def lancar(z, atend, pedidos, dry, forcar, telas=None, dump=None):
         desc = ", ".join(f"{n}={vtxt(f)}" + (f" (atual {vtxt(sub_val(s))})" if sub_val(s) not in (None, 0) else "") for sq, (n, f, dec, s) in cs.items())
         if dry:
             print(f"  [dry-run] {tag}: {it['NM_EXAME'].strip()}: {desc}  -> POST WResultEntry/save (não enviado)")
+            if _is_eas_vo(vo):
+                # simula o que ficaria nos pares a partir do env
+                sim = copy.deepcopy(vo)
+                for x in sim["subExams"]:
+                    if x["nrSeqExame"] in env:
+                        if is_num(x):
+                            x["qtResultado"] = env[x["nrSeqExame"]]
+                        else:
+                            x["dsResultado"] = env[x["nrSeqExame"]]
+                eas_print_readback(sim)
             rel.append((tag, "dry-run")); continue
         r, cons, b = t.salvar(novo, seq, nse)
         avisos = [f"{x.get('nmExame')}: {x.get('dsResultado')} fora de {x.get('dsMinima')}-{x.get('dsMaxima')}" for x in (r or {}).get("referenceValueRecords", [])]
@@ -828,6 +1041,8 @@ def lancar(z, atend, pedidos, dry, forcar, telas=None, dump=None):
         erros = [(cs[sq][0], lidos.get(sq), f) for sq, f in env.items() if lidos.get(sq) is None or vdiff(lidos[sq], f)]
         st = "ok" if not erros else "DIVERGÊNCIA: " + "; ".join(f"{n} lido {o} esperado {f}" for n, o, f in erros)
         print(f"  {tag}: salvo {desc} | releitura {st}" + (f" | aviso referência: {'; '.join(avisos)}" if avisos else ""))
+        if _is_eas_vo(b["ResultVO"]):
+            eas_print_readback(b["ResultVO"])
         rel.append((tag, st))
     if dump:
         json.dump(dumps, open(dump, "w"), ensure_ascii=False, indent=1); print(f"  payloads salvos em {dump}")
@@ -859,7 +1074,7 @@ def gaso_num(v):
 
 
 def gaso_payload(vo, env):
-    """Reproduz o save da tela (HAR <n> GASV): DV preenchido -> qtResultado texto ("7.458") e
+    """Reproduz o save da tela (HAR 800654 GASV): DV preenchido -> qtResultado texto ("7.458") e
     dsResultado None; D -> qtResultado None e dsResultado texto com vírgula ("5,13"); DL (obs) texto.
     Campos não informados ficam como vieram do build (DV já preenchido vai em texto)."""
     novo = norm_inst(copy.deepcopy(vo))
@@ -948,7 +1163,7 @@ def cmd_gaso(z, atend, a, dry, forcar, dump=None):
 
 
 # ---------------- Hemograma Completo (HC, 202020380) ----------------
-# Descobertas no HAR do <n>: a tela envia TODOS os subexames V/DV com qtResultado em texto
+# Descobertas no HAR do 803328: a tela envia TODOS os subexames V/DV com qtResultado em texto
 # ("3.88", "0") e dsResultado=None. Plaquetas (1076, DV) é enviada em 10^9/L ("409") e o servidor
 # grava x1000 (409000); reenviar 409000 grava 409000000. Leucócitos Totais e absolutos são
 # recalculados pelo servidor (ieCampoCalculo=A), mas a tela também os envia; o CLI envia calculados.

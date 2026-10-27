@@ -70,9 +70,14 @@ Digita exames por sigla (a sigla do exame no Tasy: `NA+`, `K+`, `CREA`, `UREA`, 
   ```
   Se `BILI.indireta` não for informada, o CLI calcula total − direta. O próprio Zion recalcula a indireta; aceite o valor do sistema.
 - **CREA / eTFG:** se o layout tiver campo de idade e o paciente tiver > 12 anos, o CLI preenche a idade (pela data de nascimento) e a eTFG (MDRD) sozinho. Use `CREA.idade=` / `CREA.etfg=` só para sobrescrever.
-- **Listas/texto** (tipagem, Coombs, EAS...): o valor precisa existir na lista do sistema; se não existir, o CLI recusa e mostra as opções válidas.
+- **Listas/texto** (tipagem, Coombs): o valor precisa existir na lista do sistema; se não existir, o CLI recusa e mostra as opções válidas.
   ```bash
   python3 zion.py resultado 123456 --exame GP-TIP.abo=B --exame GP-TIP.rh=Positivo --exame COOD=Negativo
+  ```
+- **EAS / URN1 (urina rotina):** ver seção detalhada em `AGENTS.md`. Resumo: sedimento em pares (papel `13.000/mL` → simples `13` + x1000 `13000`); o CLI corrige se você mandar `13000` no simples. Cruzes (`++`, `2+`) casam por texto exato. Sempre `--forcar`. Exemplo:
+  ```bash
+  python3 zion.py resultado 123456 --forcar --exame URN1.Hemoglobina=++ \
+    --exame URN1.celulas=13000 --exame URN1.leucocitos_ml=2000 --exame URN1.hemacias=21000
   ```
 - `--forcar`: sobrescreve campos que já têm valor (sem ele, campos preenchidos são preservados).
 - `--dry-run`: mostra o que seria enviado, sem salvar.

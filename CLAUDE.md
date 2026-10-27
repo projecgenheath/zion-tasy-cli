@@ -46,8 +46,57 @@ Janela: pedidos dos últimos 4 dias.
 - Campos já preenchidos só são sobrescritos com `--forcar`, e só se o usuário pedir correção.
 - **Avisos** de fora da referência, consistência ou eTFG são esperados; não cancelam o save.
 - **`IE_GERAR_AMOSTRA=S`** em `digitacao`: segue igual ao navegador (o CLI já faz). Outra resposta não mapeada → o CLI para; reporte ao usuário, não force.
-- Listas/texto (Tipagem `GP-TIP.abo`/`.rh`, Coombs `COOD`, EAS): use valores que existam na lista; se o CLI recusar, mostre as opções ao usuário.
-- Em dúvida sobre unidade/fator (ex.: sedimento urinário "x1000"), **pergunte** antes de salvar.
+- Listas/texto (Tipagem `GP-TIP.abo`/`.rh`, Coombs `COOD`): use valores que existam na lista; se o CLI recusar, mostre as opções ao usuário.
+- **EAS (URN1):** ver seção dedicada abaixo. Não pergunte sobre x1000 — o CLI normaliza.
+
+## EAS / Urina Rotina (URN1) — LEIA ANTES DE DIGITAR
+O EAS é o exame em que IAs mais erram. O CLI **normaliza sozinho**; mesmo assim siga o modelo abaixo.
+
+Sempre use `--forcar` no URN1 (o modelo já vem com valores "normais" preenchidos).
+**Nunca liberar.**
+
+### Sedimento (pares simples / x1000)
+No papel, "13.000/mL" significa:
+- campo simples (`Células epiteliais`, `Leucócitos (Piócitos)`, `Hemácias`) = **13**
+- campo `(x1000)` = **13000**
+
+Se você mandar `13000` no campo simples, a tela multiplica e grava `13000000`. **Não faça isso.**
+O CLI corrige: qualquer valor ≥ 1000 no simples é tratado como /mL; o par inteiro é regravado.
+Aliases aceitos (todos significam a contagem /mL):
+- `URN1.celulas=13000` ou `URN1.Células epiteliais=13` ou `=13000`
+- `URN1.leucocitos_ml=2000` ou `URN1.Leucócitos (Piócitos)=2`
+- `URN1.hemacias=21000` ou `URN1.Hemácias=21`
+
+`URN1.Leucócitos` (sem sufixo) é a **fita** (opções Ausente/+/++/+++/++++).
+Se o valor for numérico, o CLI entende sedimento (Piócitos); se for `+`/`Ausente`, vai para a fita.
+
+### Cruzes (+, ++, +++, ++++)
+Mande o texto exato (`++`) ou aliases (`2+`, `+2`, `positivo ++`).
+`ausente` / `negativo` / `-` → `Ausente` (ou `Negativo`/`Negativa` quando a lista for essa).
+O CLI casa texto exato **antes** do slug — assim `++` nunca vira `+`.
+
+### Aspecto / Cor / etc. (listas)
+Aceita sem acento/maiúscula e com fuzzy leve (`ligeiramente turvo` → `Ligeiramento Turvo`, typo do sistema).
+Se não casar, o CLI lista as opções e **não grava**.
+
+### Exemplo completo
+```bash
+python3 zion.py resultado AT --forcar --dry-run \
+  --exame "URN1.Cor=Amarelo claro" \
+  --exame "URN1.Aspecto=ligeiramente turvo" \
+  --exame "URN1.Depósito=Presente" \
+  --exame "URN1.Densidade=1010" \
+  --exame "URN1.pH=6" \
+  --exame "URN1.Glicose=+" \
+  --exame "URN1.Hemoglobina=++" \
+  --exame "URN1.celulas=13000" \
+  --exame "URN1.leucocitos_ml=2000" \
+  --exame "URN1.hemacias=21000" \
+  --exame "URN1.Microbiota=Moderada"
+```
+Depois tire o `--dry-run`. O CLI imprime a releitura dos pares:
+`Hemácias: 21 | x1000: 21000 (=21.000/mL)` — confira antes de reportar.
+Campos que não estão no papel **não** devem ser enviados.
 
 ## Nunca
 - Liberar resultados.
