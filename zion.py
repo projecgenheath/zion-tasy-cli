@@ -2838,7 +2838,17 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False, historico=True
     if n_ignorados:
         print(f"\n{n_ignorados} exame(s) da mesma prescrição ainda não liberados (ignorados).")
     if historico:
-        hist_resumo_avisos(hist_todos, notas_clinicas(z, atend, 1)[1] if hist_todos else None)
+        sem_ev = []
+        if hist_todos:
+            print("\n## Evolução clínica (PEP) por atendimento")
+            por_at = {}
+            for h in hist_todos:
+                por_at.setdefault(h["atendimento"], []).append((h["exame"], h["nome"]))
+            for at_h, exs in por_at.items():
+                print(f"== AT {at_h}")
+                sem_at, _m = print_notas(z, at_h, 1, exs)
+                sem_ev.extend(f"{c} (AT {at_h})" for c in sem_at)
+        hist_resumo_avisos(hist_todos, sem_ev if hist_todos else None, "nenhum trecho compatível nas notas recentes")
     return {"totais": totais, "erros_digitacao": erros, "criticos": crits, "sem_achados": sem}
 
 
@@ -2879,8 +2889,8 @@ HEMO_CHART = {
 }
 # Grupos de exame -> palavras-chave para achar o trecho certo da evolução clínica.
 HIST_GRUPOS = {
-    "renal": {"exames": ("CREA", "UREA", "CLCR", "CRU", "MICRO", "PTUR", "PTU24"),
-              "nomes": ("creatin", "ureia", "uréia", "clearance", "proteinuria"),
+    "renal": {"exames": ("CREA", "UREA", "CLCR", "CRU", "MICRO", "PTUR", "PTU24", "AURS", "URN1", "EAS"),
+              "nomes": ("creatin", "ureia", "uréia", "clearance", "proteinuria", "ácido úrico", "acido urico", "urina"),
               "palavras": ("FUNÇÃO RENAL", "FUNCAO RENAL", "DIURESE", "DIÁLISE", "DIALISE", "HEMODIÁLISE",
                            "HEMODIALISE", "TRS", "IRA", "LRA", "IRC", "DRC", "OLIGÚRIA", "OLIGURIA", "ANÚRIA",
                            "ANURIA", "CREATININA", "UREIA", "URÉIA", "NEFRO")},
@@ -2921,30 +2931,160 @@ def hist_grupo(cd, nm=""):
     return None
 
 
-def trecho_relevante(texto, cd, nm="", largura=220, max_trechos=3):
-    """Destaca na evolução os trechos ligados ao grupo do exame (palavras-chave em >>> <<<)."""
+def _kw_regex(p):
+    k = re.escape(_sem_acento(p).upper().strip())
+    return re.compile(r"(?<![A-Z0-9])" + k + (r"(?![A-Z0-9])" if len(p.strip()) <= 5 else ""))
+
+
+def trecho_relevante(texto, cd, nm="", largura=200, max_trechos=2, grupo=None):
+    """Trechos da evolução ligados ao grupo do exame (palavra-chave entre >>> <<<). (texto|None, grupo)."""
     txt = re.sub(r"<[^>]+>", " ", str(texto or "")); txt = re.sub(r"\s+", " ", txt).strip()
-    g = hist_grupo(cd, nm)
+    g = grupo or hist_grupo(cd, nm)
     if not g:
-        return txt[:largura * 2] + ("…" if len(txt) > largura * 2 else ""), None
-    up = _sem_acento(txt).upper(); out = []; usados = []
+        return None, None
+    up = _sem_acento(txt).upper()
+    if len(up) != len(txt):   # _sem_acento mudou o tamanho: usa o texto sem acento para recortar
+        txt = _sem_acento(txt)
+    hits = []
     for p in HIST_GRUPOS[g]["palavras"]:
-        i = up.find(_sem_acento(p).upper())
-        if i < 0 or any(a <= i <= b for a, b in usados):
+        m = _kw_regex(p).search(up)
+        if m:
+            hits.append((m.start(), m.end()))
+    # prioridade = ordem das palavras no grupo (ex.: FUNÇÃO RENAL antes de IRA)
+    out = []; usados = []
+    for a0, b0 in hits:
+        if any(a <= a0 <= b for a, b in usados):
             continue
-        a, b = max(0, i - largura // 3), min(len(txt), i + largura)
+        a, b = max(0, a0 - 40), min(len(txt), b0 + largura)
+        out.append(("…" if a else "") + txt[a:a0] + ">>>" + txt[a0:b0] + "<<<" + txt[b0:b] + ("…" if b < len(txt) else ""))
         usados.append((a, b))
-        out.append(("…" if a else "") + txt[a:i] + ">>>" + txt[i:i + len(p)] + "<<<" + txt[i + len(p):b] + ("…" if b < len(txt) else ""))
         if len(out) >= max_trechos:
             break
     return (" | ".join(out) if out else None), g
 
 
-def notas_clinicas(z, atend, n=1):
-    """Últimas N evoluções do PEP. Retorna (lista, motivo_se_vazia).
-    O serviço da aba "Notas clínicas" (PEP, feature 281, WDBPanel EVOLUCAO_PACIENTE) ainda não foi
-    mapeado sem HAR: devolve ([], motivo) e o chamador avisa e segue (nunca bloqueia)."""
-    return [], "notas clínicas do PEP não disponíveis no CLI (serviço ainda não mapeado; confira no PEP)"
+PEP_FEAT = {"Feature-Code": "281", "Active-Feature-Code": "281", "Feature-Route": "atepaceh"}
+# Grid "Notas clínicas" do PEP (WDBPanel EVOLUCAO_PACIENTE): visão/ativação/objeto do schematic 281.
+PEP_NOTAS = {"table": "EVOLUCAO_PACIENTE", "visao": 29796, "ativacao": 6886, "obj": 40791, "filtro": 460773,
+             "acao": "ActivateClinicalNotesAction"}
+NOTAS_JANELA = 40     # quantas notas recentes ler para achar as compatíveis
+
+
+def rtf_texto(rtf):
+    """RTF (DS_EVOLUCAO) -> texto simples, sem chamar o servidor."""
+    s = str(rtf or "")
+    if not s.lstrip().startswith("{\\rtf"):
+        return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", s)).strip()
+    out, i, n, pilha, pular = [], 0, len(s), [], False
+    destinos = ("fonttbl", "colortbl", "stylesheet", "info", "pict", "generator", "*", "listtable", "listoverridetable", "themedata", "latentstyles")
+    uc_skip = 0
+    while i < n:
+        c = s[i]
+        if c == "{":
+            pilha.append(pular); i += 1; continue
+        if c == "}":
+            pular = pilha.pop() if pilha else False; i += 1; continue
+        if c == "\\":
+            i += 1
+            if i >= n:
+                break
+            c = s[i]
+            if c in "\\{}":
+                if not pular: out.append(c)
+                i += 1; continue
+            if c == "'":
+                hx = s[i + 1:i + 3]; i += 3
+                if not pular and uc_skip == 0:
+                    try: out.append(bytes([int(hx, 16)]).decode("cp1252"))
+                    except Exception: pass
+                uc_skip = max(0, uc_skip - 1)
+                continue
+            if c == "*":
+                pular = True; i += 1; continue
+            m = re.match(r"([a-zA-Z]+)(-?\d+)? ?", s[i:])
+            if not m:
+                i += 1; continue
+            w, arg = m.group(1), m.group(2); i += m.end()
+            if w in destinos:
+                pular = True
+            elif pular:
+                pass
+            elif w in ("par", "line", "row", "sect", "page"):
+                out.append("\n")
+            elif w == "tab" or w == "cell":
+                out.append(" ")
+            elif w == "u" and arg:
+                v = int(arg); out.append(chr(v + 65536 if v < 0 else v)); uc_skip = 1
+            continue
+        if c in "\r\n":
+            i += 1; continue
+        if not pular:
+            if uc_skip:
+                uc_skip -= 1
+            else:
+                out.append(c)
+        i += 1
+    t = "".join(out)
+    t = re.sub(r"[ \t]+", " ", t)
+    return re.sub(r"\n\s*\n+", "\n", t).strip()
+
+
+def _pep_notas_req(atend, pf, rpp):
+    agora = dt.datetime.now(TZ)
+    pn = PEP_NOTAS
+    pb = {"_schematicObjCode": pn["obj"], "isToReloadActivationParameters": True, "_dimensionValues": {},
+          "IE_CONSIDERAR_DATAS": "N", "DT_INICIO": instant_of(agora - dt.timedelta(days=15)), "DT_FIM": instant_of(agora),
+          "IE_EVOLUCOES": "300", "IE_SUMARIO": "S", "IE_ATENCAO_PRIMARIA_F": "N", "IE_ATENCAO_SECUNDARIA_F": "N",
+          "IE_ATENCAO_TERCIARIA_F": "N", "IE_TYPE_PRESENTATION": "N", "_filterCode": pn["filtro"], "_checkoutFilters": [],
+          "IE_TODAS_PACIENTE": "A", "NR_ATENDIMENTO": int(atend), "IE_SOAP": None, "CD_PESSOA_FISICA": str(pf or ""),
+          "IS_ALLPATIENT": "A", "IE_NIVEIS_LIB": "T", "LISTAS_FILTROS": {}, "CD_EVOLUCAO": 0,
+          "NR_ATENDIMENTO_CARTA": int(atend), "CD_FUNCAO_ATIVA": 281}
+    return {"tipo": "RequisicaoDataSource", "@class": "br.com.wheb.vo.componentes.metaData.RequisicaoDataSource",
+            "page": 1, "fieldActivators": {}, "selectFirstRecord": False, "paramsByName": pb, "legendDef": {},
+            "functionVariables": {}, "tableName": pn["table"], "nrSeqVisao": pn["visao"], "nrSeqAtivacao": pn["ativacao"],
+            "featureCode": 281, "tableDescription": f"{pn['table']}_281_{pn['visao']}_dg", "schematicsObj": pn["obj"],
+            "tipoAtivacao": 6, "inicioPagina": 1, "actionName": pn["acao"], "qtRegistrosPagina": int(rpp),
+            "qtMaxRegistros": 0, "unificarCountRegistros": True, "withoutCache": False}
+
+
+def _pf_do_atendimento(z, atend):
+    """CD_PESSOA_FISICA do paciente pelo atendimento (fila/liberados ou prescrição)."""
+    for ph in (30, 40):
+        try:
+            if ph == 30:
+                rows = z.datasource(master_body(30, atend, ini=dt.datetime.now(TZ) - dt.timedelta(days=30), fim=dt.datetime.now(TZ)))
+            else:
+                rows, _ = listar_liberados(z, dt.datetime.now(TZ) - dt.timedelta(days=90), dt.datetime.now(TZ), atend=atend)
+        except Exception:
+            rows = []
+        for r in rows:
+            if r.get("CD_PESSOA_FISICA"):
+                return str(r["CD_PESSOA_FISICA"])
+    return None
+
+
+def notas_clinicas(z, atend, n=1, pf=None, janela=NOTAS_JANELA):
+    """Notas clínicas liberadas do PEP (mais recentes primeiro). Só leitura.
+    Retorna (lista, motivo_se_vazia); cada nota: dt, profissional, tipo, subtipo, setor, texto."""
+    try:
+        pf = pf or _pf_do_atendimento(z, atend)
+        d = z.post("DataSourceProvider/getDataSource", [_pep_notas_req(atend, pf, max(int(janela), int(n)))], feat=PEP_FEAT) or {}
+    except Exception as e:
+        return [], f"erro ao ler notas clínicas do PEP: {e}"
+    rows = ((d.get("dados") or {}).get("linhasResultSet")) or []
+    notas = []
+    for r in rows:
+        if r.get("DT_INATIVACAO") or (r.get("IE_SITUACAO") and r.get("IE_SITUACAO") != "A"):
+            continue
+        notas.append({"cd": r.get("CD_EVOLUCAO"), "dt": _dt_local(r.get("DT_EVOLUCAO")),
+                      "liberada": bool(r.get("DT_LIBERACAO")), "profissional": (r.get("NM_MEDICO") or "").strip(),
+                      "tipo": (r.get("DS_TIPO_EVOLUCAO") or "").strip(), "subtipo": (r.get("DS_SUBTIPO_EVOLUCAO") or "").strip(),
+                      "setor": (r.get("DS_SETOR_ATENDIMENTO") or "").strip(), "atendimento": r.get("NR_ATENDIMENTO"),
+                      "texto": rtf_texto(r.get("DS_EVOLUCAO"))})
+    notas.sort(key=lambda x: x["dt"] or dt.datetime(1970, 1, 1, tzinfo=TZ), reverse=True)
+    if not notas:
+        return [], "nenhuma nota clínica no PEP para este atendimento"
+    return notas, None
 
 
 def _dt_local(v):
@@ -3205,36 +3345,58 @@ def print_historico(h, compacto=True, max_ant=4, so_principais=False):
             print(f"      anteriores: {txt}")
 
 
-def hist_resumo_avisos(hs, notas_motivo=None):
+def hist_resumo_avisos(hs, sem_evolucao=None, motivo=None):
     """Resumo final: exames sem anterior / com mudança / sem evolução compatível."""
     sem_ant = [h["exame"] for h in hs if h["sem_historico"]]
     grandes = [f"{h['exame']}:{c['campo']}" for h in hs for c in h["campos"] if any(a.startswith("mudança") or "crítica" in a for a in c["avisos"])]
     print("\n## Resumo do histórico (só leitura — nada foi liberado)")
     print(f"  Sem resultado anterior: {', '.join(sem_ant) if sem_ant else '(nenhum)'}")
     print(f"  Mudança grande / faixa crítica: {', '.join(grandes) if grandes else '(nenhuma)'}")
-    if notas_motivo:
-        print(f"  Sem evolução clínica compatível: {', '.join(h['exame'] for h in hs) or '(nenhum)'} — {notas_motivo}")
+    if sem_evolucao is not None:
+        txt = ", ".join(sem_evolucao) if sem_evolucao else "(nenhum)"
+        print(f"  Sem evolução clínica compatível: {txt}" + (f" — {motivo}" if motivo and sem_evolucao else ""))
 
 
-def print_notas(z, atend, n, exames):
-    """Imprime as últimas N evoluções; devolve o motivo quando não há (para o resumo)."""
+def print_notas(z, atend, n, exames, pf=None):
+    """Para cada grupo de exame mostra as N notas mais recentes com trecho compatível.
+    Devolve (lista de exames sem evolução compatível, motivo). Nunca levanta exceção."""
+    exames = [(str(c or "").upper(), nm or "") for c, nm in exames]
     try:
-        notas, motivo = notas_clinicas(z, atend, n)
+        notas, motivo = notas_clinicas(z, atend, n, pf=pf)
     except Exception as e:
         notas, motivo = [], f"erro ao ler notas clínicas: {e}"
     if not notas:
         print(f"  AVISO: sem evolução clínica compatível ({motivo})")
-        return motivo
-    for nt in notas[:n]:
-        print(f"  Nota {_fmt_d(nt.get('dt'))} | {nt.get('profissional') or '?'} | {nt.get('tipo') or ''}")
-        achou = False
-        for cd, nm in exames:
-            tr, g = trecho_relevante(nt.get("texto"), cd, nm)
-            if tr and g:
-                print(f"    [{cd} → {g}] {tr}"); achou = True
+        return [c for c, _ in exames], motivo
+    ult = notas[0]
+    print(f"  Notas clínicas lidas: {len(notas)} (mais recente {_fmt_d(ult['dt'])} — {ult['subtipo'] or ult['tipo']})")
+    grupos = {}
+    for c, nm in exames:
+        grupos.setdefault(hist_grupo(c, nm), []).append(c)
+    sem = []
+    for g, cds in grupos.items():
+        rot = ", ".join(dict.fromkeys(cds))
+        if g is None:
+            print(f"  [{rot}] AVISO: sem evolução clínica compatível (exame sem grupo de palavras-chave)")
+            sem.extend(cds); continue
+        achou = 0
+        def _medica(nt):
+            t = _sem_acento(f"{nt['tipo']} {nt['subtipo']}").upper()
+            return 0 if ("MEDIC" in t or "UTI" in t) else 1
+        for nt in sorted(notas, key=lambda x: (_medica(x), -(x["dt"].timestamp() if x["dt"] else 0))):
+            tr, _g = trecho_relevante(nt["texto"], None, grupo=g)
+            if not tr:
+                continue
+            achou += 1
+            prof = f" | {nt['profissional']}" if nt["profissional"] else ""
+            print(f"  [{g}: {rot}] {_fmt_d(nt['dt'])} | {nt['subtipo'] or nt['tipo']} ({nt['tipo']}){prof}")
+            print(f"      {tr}")
+            if achou >= max(1, int(n)):
+                break
         if not achou:
-            print(f"    AVISO: sem evolução clínica compatível com {', '.join(c for c, _ in exames)} nesta nota")
-    return None
+            print(f"  [{g}: {rot}] AVISO: sem evolução clínica compatível nas últimas {len(notas)} notas")
+            sem.extend(cds)
+    return sem, ("nenhum trecho compatível nas notas recentes" if sem else None)
 
 
 def hist_pos_salvar(z, salvos, dias=HIST_DIAS_PADRAO, notas=1):
@@ -3253,8 +3415,10 @@ def hist_pos_salvar(z, salvos, dias=HIST_DIAS_PADRAO, notas=1):
         except Exception as e:
             print(f"  AVISO: histórico de {it.get('CD_EXAME')} não consultado ({e}) — o resultado continua salvo")
     atend = salvos[0][0].atend
-    motivo = print_notas(z, atend, notas, [(it.get("CD_EXAME"), it.get("NM_EXAME")) for _, it, _ in salvos])
-    hist_resumo_avisos(hs, motivo)
+    pf = next((str(n.get("CD_PESSOA_FISICA")) for t, it, _ in salvos for (_g, n) in [t.nodes.get(it.get("NR_SEQ_PRESCR"), (None, {}))] if n.get("CD_PESSOA_FISICA")), None)
+    print("  -- Evolução clínica (PEP)")
+    sem, motivo = print_notas(z, atend, notas, [(it.get("CD_EXAME"), it.get("NM_EXAME")) for _, it, _ in salvos], pf=pf)
+    hist_resumo_avisos(hs, sem, motivo)
 
 
 def cmd_historico(z, atend, exames=None, dias=HIST_DIAS_PADRAO, notas=1, as_json=False):
@@ -3307,14 +3471,18 @@ def cmd_historico(z, atend, exames=None, dias=HIST_DIAS_PADRAO, notas=1, as_json
             print_historico(h, compacto=False, max_ant=12)
             if h["sem_historico"]:
                 print(f"    AVISO: sem resultado anterior para {h['exame']}")
+    pf = next((str(n.get("CD_PESSOA_FISICA")) for t, it in alvos for (_g, n) in [t.nodes.get(it.get("NR_SEQ_PRESCR"), (None, {}))] if n.get("CD_PESSOA_FISICA")), None)
     if as_json:
-        notas_l, motivo = notas_clinicas(z, atend, notas)
+        notas_l, motivo = notas_clinicas(z, atend, notas, pf=pf)
+        for nt in notas_l:
+            nt["trechos"] = {h["exame"]: trecho_relevante(nt["texto"], h["exame"], h["nome"])[0] for h in hs}
+        notas_l = [nt for nt in notas_l if any(nt["trechos"].values())][:max(1, notas) * 3]
         print(json.dumps({"atendimento": atend, "origem": origem, "dias": dias, "exames": hs,
                           "notas": notas_l, "notas_motivo": motivo}, ensure_ascii=False, indent=1, default=str))
         return hs
     print("\n-- Evolução clínica (PEP)")
-    motivo = print_notas(z, atend, notas, [(h["exame"], h["nome"]) for h in hs])
-    hist_resumo_avisos(hs, motivo)
+    sem, motivo = print_notas(z, atend, notas, [(h["exame"], h["nome"]) for h in hs], pf=pf)
+    hist_resumo_avisos(hs, sem, motivo)
     return hs
 
 

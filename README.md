@@ -240,12 +240,14 @@ Fontes no Tasy (descobertas nos bundles da tela, sem HAR):
 - `CorLabF0/loadPatientData` (Consulta de Resultados, feature 7008) — atendimento de cada prescrição.
 - Exames sem série no gráfico (ex.: gasometria) → lê os **liberados (40)** do mesmo atendimento
   (até 3 prescrições, como o `conferir`).
-- **Notas clínicas do PEP: ainda não mapeadas.** O CLI imprime
-  `AVISO: sem evolução clínica compatível (notas clínicas do PEP não disponíveis no CLI…)` e segue;
-  confira a evolução no PEP (Notas clínicas → Filtrar). Os mapas de palavras-chave por grupo
-  (`HIST_GRUPOS`: renal → FUNÇÃO RENAL/DIURESE/diálise; hemato → sangramento/transfusão;
-  eletrólitos → reposição/diálise; hepático; infeccioso; metabólico) já estão prontos para
-  destacar o trecho da evolução quando o serviço for mapeado (`notas_clinicas()`).
+- **Notas clínicas do PEP** (feature 281, grid "Notas clínicas" = `DataSourceProvider/getDataSource`
+  na tabela `EVOLUCAO_PACIENTE`, ação `ActivateClinicalNotesAction`): o CLI lê as ~40 notas mais
+  recentes do atendimento, converte o RTF em texto localmente e, para cada grupo de exame, mostra as
+  `--notas N` notas mais recentes com trecho compatível (notas médicas/UTI primeiro): data, tipo,
+  profissional e o trecho com a palavra-chave entre `>>> <<<`. Mapas em `HIST_GRUPOS`: renal →
+  FUNÇÃO RENAL/DIURESE/diálise/IRA; hemato → sangramento/transfusão/plaquetopenia; eletrólitos →
+  reposição/diálise/hidratação; hepático; infeccioso; metabólico. Sem trecho compatível sai
+  `AVISO: sem evolução clínica compatível` e o exame entra no resumo.
 
 ### Depois de salvar (`resultado`, `hemo`, `gaso`)
 - Após cada save bem-sucedido o CLI imprime uma comparação compacta por exame salvo.
