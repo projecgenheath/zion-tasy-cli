@@ -130,7 +130,7 @@ python3 zion.py ler 123456
 
 **Não misture.** `conferir` ignora qualquer exame da mesma prescrição que ainda não esteja em status 40 (ex.: HCV/HBsAg em Digitação). Quem confere **não digita nem altera nada**.
 
-### `conferir [--de DD/MM/AAAA[ HH:MM]] [--ate ...] [--at AT] [--json]`
+### `conferir [--de DD/MM/AAAA[ HH:MM]] [--ate ...] [--at AT] [--json] [--sem-historico] [--dias N]`
 **Só leitura.** Lista absolutamente todos os exames com status **Exame Liberado** (40) no período (padrão: hoje 00:00 → agora). O período e a hora mostrada em cada linha usam **`DT_PRESCRICAO`** (hora da solicitação, `dd/mm/aaaa HH:MM`, America/Sao_Paulo); `--json` inclui `dt_prescricao` / `dt_prescricao_iso` e `campo_hora`. Abre cada prescrição, lê **somente** os campos dos exames em status 40 (ignora pendentes da mesma presc) e classifica achados em:
 
 - **Possível erro de digitação** — escala ×10/×100/×1000, pares de sedimento EAS inconsistentes, leucograma ≠ 100%, Ht/Hb/CHCM/VCM incoerentes, BD > BT, pH sanguíneo fora de 6,8–7,8, campo principal zerado, conclusão vs valor (Beta HCG), eTFG vazia com creatinina e idade > 12, heurística “> 10× referência”.
@@ -212,6 +212,51 @@ Digita o **Hemograma Completo** com os valores **exatamente como no impresso do 
 python3 zion.py hemo 123456 --rbc 4.04 --hgb 13.3 --hct 36 --vcm 89.1 --hcm 32.8 --chcm 36.9 --rdw 12.6 \
   --wbc 14.06 --neu 82.1 --lym 11.9 --mon 5.6 --eos 0.3 --bas 0.1 --plt 174 --vpm 11.7 --dry-run
 ```
+
+## Histórico do paciente (só leitura) — `historico`
+
+Todo resultado digitado (normal **ou** alterado, qualquer exame) deve ser comparado com os
+resultados anteriores do paciente e com a evolução clínica antes de reportar. O CLI faz isso
+sozinho depois de `resultado`, `hemo` e `gaso`, e também no `conferir`.
+
+### `historico AT [--exame SIGLA ...] [--dias 90] [--notas 1] [--json]`
+- Só leitura: nada é salvo, aprovado ou liberado.
+- Exames atuais = os que estão em Digitação (30); se não houver, usa o liberado mais recente de cada exame.
+- Para cada campo numérico mostra: valores anteriores com data/hora de coleta e atendimento
+  (cruza **todos os atendimentos** do paciente), tendência (subindo/caindo/estável) e Δ vs último.
+- Alertas: `mudança grande vs último` (> 50%), `passou a faixa crítica (antes não era)` (tabela
+  `CRITICO_BOUNDS`) e `AVISO: sem resultado anterior`.
+- No fim imprime o **resumo**: exames sem resultado anterior, com mudança grande/crítica e sem evolução clínica compatível.
+
+```bash
+python3 zion.py historico 123456                 # todos os exames do atendimento
+python3 zion.py historico 123456 --exame CREA --exame UREA --dias 30
+```
+
+Fontes no Tasy (descobertas nos bundles da tela, sem HAR):
+- `CorLabF3/getChartRecords` — dados do gráfico **Resultados anteriores** da própria digitação
+  (até 6 prescrições por chamada; o CLI pagina para trás até a janela `--dias`).
+- `CorLabF3/ativarExameLabResultItemAsHashMap` — datas (coleta/aprovação) e status de cada prescrição.
+- `CorLabF0/loadPatientData` (Consulta de Resultados, feature 7008) — atendimento de cada prescrição.
+- Exames sem série no gráfico (ex.: gasometria) → lê os **liberados (40)** do mesmo atendimento
+  (até 3 prescrições, como o `conferir`).
+- **Notas clínicas do PEP: ainda não mapeadas.** O CLI imprime
+  `AVISO: sem evolução clínica compatível (notas clínicas do PEP não disponíveis no CLI…)` e segue;
+  confira a evolução no PEP (Notas clínicas → Filtrar). Os mapas de palavras-chave por grupo
+  (`HIST_GRUPOS`: renal → FUNÇÃO RENAL/DIURESE/diálise; hemato → sangramento/transfusão;
+  eletrólitos → reposição/diálise; hepático; infeccioso; metabólico) já estão prontos para
+  destacar o trecho da evolução quando o serviço for mapeado (`notas_clinicas()`).
+
+### Depois de salvar (`resultado`, `hemo`, `gaso`)
+- Após cada save bem-sucedido o CLI imprime uma comparação compacta por exame salvo.
+- **Nunca bloqueia nem pula o save:** sem resultado anterior ou sem evolução compatível, o
+  resultado é salvo normalmente e sai `AVISO: sem resultado anterior` /
+  `AVISO: sem evolução clínica compatível`, mais o resumo final listando esses exames.
+- `--sem-historico` desliga a comparação. Em `--dry-run` não há comparação (nada foi salvo).
+
+### No `conferir`
+- Cada exame liberado ganha a mesma comparação (só os campos com histórico ou alerta) e o resumo no fim.
+- `--sem-historico` desliga; `--dias N` muda a janela (padrão 90). Em `--json` vai na chave `historico`.
 
 ## Laudos do DB Diagnósticos (E-DB) → anexar no Tasy
 

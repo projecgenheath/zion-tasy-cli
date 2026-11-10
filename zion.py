@@ -13,6 +13,8 @@ Uso:
   python3 zion.py resultado AT --exame NA+=134.9 [--exame ...] [--dry-run] [--forcar]
   python3 zion.py gaso AT --na 134.9 --k 4.37 --ica 1.08 --cl 105.7 [--glu --lac --ph ...] [--dry-run] [--forcar]
   (nunca libera; após salvar relê via build e compara)
+  python3 zion.py historico AT [--exame CREA] [--dias 90] [--notas 1] [--json]   # só leitura
+  (resultado/hemo/gaso/conferir comparam com o histórico; --sem-historico desliga; nunca bloqueia o save)
   python3 zion.py db-login --cpf CPF --password-stdin [--serv-sol 2517530] [--otp COD]
   python3 zion.py db-buscar AT [--chave X] [--pedido N] [--json]   # só leitura
   python3 zion.py db-anexar AT [--exame TOXG] [--dry-run] [--substituir]
@@ -445,15 +447,15 @@ class Zion:
             return self.login()
 
     # ---------- chamadas ----------
-    def post(self, path, body, feature=True, _retry=True):
+    def post(self, path, body, feature=True, _retry=True, feat=None):
         self.ensure()
-        h = dict(self.feat) if feature else {}
+        h = (dict(feat) if feat else dict(self.feat)) if feature else {}
         self.ncalls += 1
         r = self.s.post(API + "/service/" + path, json=body, headers=h, timeout=90)
         if r.status_code in (401, 403) and _retry:
             if not self.refresh():
                 self.login()
-            return self.post(path, body, feature, _retry=False)
+            return self.post(path, body, feature, _retry=False, feat=feat)
         if r.status_code != 200:
             raise RuntimeError(f"{path}: HTTP {r.status_code} {r.text[:300]}")
         if r.headers.get("xsrf-token") and r.headers["xsrf-token"] != self.sess.get("xsrf"):
@@ -1742,6 +1744,7 @@ def lancar(z, atend, pedidos, dry, forcar, telas=None, dump=None):
         print(f"  {tag}: salvo {desc} | releitura {st}" + (f" | aviso referência: {'; '.join(avisos)}" if avisos else ""))
         if _is_eas_vo(b["ResultVO"]):
             eas_print_readback(b["ResultVO"])
+        _HIST_SALVOS.append((t, it, b["ResultVO"]))
         rel.append((tag, st))
     if dump:
         json.dump(dumps, open(dump, "w"), ensure_ascii=False, indent=1); print(f"  payloads salvos em {dump}")
@@ -1832,6 +1835,7 @@ def gaso_lancar(t, it, vals, obs, dry, forcar, dump=None):
         print(f"  {tag}: save retornou saved={r and r.get('saved')} - VERIFICAR"); return
     if (cons or {}).get("DS_CONSISTENCIA_P"): print(f"  {tag}: consistência: {cons['DS_CONSISTENCIA_P']}")
     avisos = [f"{x.get('nmExame')}: {x.get('dsResultado')}" for x in (r or {}).get("referenceValueRecords", [])]
+    _HIST_SALVOS.append((t, it, b["ResultVO"]))
     lid = {x["nrSeqExame"]: gaso_num(sub_val(x)) for x in b["ResultVO"]["subExams"]}
     erros = [(nomes[sq], lid.get(sq), alvo(sq)) for sq in env if lid.get(sq) is None or vdiff(lid[sq], alvo(sq))]
     print(f"  {tag}: salvo (status {b['ResultVO'].get('ieStatusAtend')}); releitura " +
@@ -1997,6 +2001,7 @@ def cmd_hemo(z, atend, a, dry, forcar, dump=None):
             print(f"  {tag}: save retornou saved={r and r.get('saved')} - VERIFICAR"); continue
         if (cons or {}).get("DS_CONSISTENCIA_P"): print(f"  {tag}: consistência: {cons['DS_CONSISTENCIA_P']}")
         avisos = [f"{x.get('nmExame')}: {x.get('dsResultado')}" for x in (r or {}).get("referenceValueRecords", [])]
+        _HIST_SALVOS.append((t, it, b["ResultVO"]))
         rl = hemo_lidos(b["ResultVO"])
         erros = [(s, rl.get(s), esp[s]) for s in esp if rl.get(s) is None or abs(rl[s] - esp[s]) > 1e-9]
         print(f"  {tag}: salvo (status {b['ResultVO'].get('ieStatusAtend')}); releitura " +
@@ -2603,7 +2608,7 @@ def _analisar_vo(vo, meta, achados):
     return campos_lidos
 
 
-def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
+def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False, historico=True, dias=90):
     """Auditoria só-leitura de TODOS os exames liberados (status 40) do período.
 
     Ignora qualquer exame da mesma prescrição que ainda não esteja em status 40
@@ -2646,6 +2651,8 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
 
     achados = []
     sem = []
+    hist_todos = []
+    hist_cache = {}
     n_exames = 0
     n_campos = 0
     n_ignorados = 0
@@ -2752,6 +2759,18 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
                     if s and s.get("dsUnidadeMedida"):
                         resumo += f" {s.get('dsUnidadeMedida')}"
                 print(f"   {cd:<8} seq {seq:<4} {nm_ex[:40]:<40} = {resumo}  [status {vo.get('ieStatusAtend')}]")
+            if historico and _vo_numericos(vo) and not exame_externo_bloqueado(it):
+                try:
+                    h = historico_exame(z, it, vo, at_i, dias, hist_cache, nr=nr)
+                    h.update({"paciente": paciente, "atendimento": at_i, "dt_prescricao": dt_p})
+                    hist_todos.append(h)
+                    if not as_json:
+                        print_historico(h, compacto=True, so_principais=True)
+                        if h["sem_historico"]:
+                            print(f"    AVISO: sem resultado anterior para {cd}")
+                except Exception as e:
+                    if not as_json:
+                        print(f"    AVISO: histórico de {cd} não consultado ({e})")
 
         if not as_json and n_ign_presc:
             print(f"   ({n_ign_presc} exame(s) da mesma prescrição ainda não liberados — ignorados)")
@@ -2778,6 +2797,7 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
             "erros_digitacao": erros,
             "criticos": crits,
             "sem_achados": sem,
+            "historico": hist_todos if historico else None,
         }
         print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
         return out
@@ -2817,8 +2837,485 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
     print(f"  Sem achados:            {totais['sem_achados']}")
     if n_ignorados:
         print(f"\n{n_ignorados} exame(s) da mesma prescrição ainda não liberados (ignorados).")
+    if historico:
+        hist_resumo_avisos(hist_todos, notas_clinicas(z, atend, 1)[1] if hist_todos else None)
     return {"totais": totais, "erros_digitacao": erros, "criticos": crits, "sem_achados": sem}
 
+
+
+
+# =====================================================================
+# ---------- Histórico do paciente (só leitura) ----------
+# Todo resultado digitado (normal ou alterado) é comparado com os resultados
+# anteriores do MESMO exame do paciente (todas as passagens/atendimentos) e com
+# a evolução clínica. Nada aqui grava, aprova ou libera — e nunca bloqueia o save.
+#
+# Serviços (descobertos nos bundles da tela, sem HAR):
+#  - CorLabF3/getChartRecords {NR_SEQ_RESULTADO, NR_PRESCRICAO, NR_SEQ_EXAME}:
+#    dados do gráfico "Resultados anteriores" da própria digitação. Devolve
+#    {SERIE: [{NR_PRESCRICAO, QT_RESULT}]} com até 6 prescrições do paciente
+#    terminando na informada (cruza atendimentos). Paginamos para trás pedindo
+#    de novo com a prescrição mais antiga.
+#  - CorLabF3/ativarExameLabResultItemAsHashMap {NR_PRESCRICAO}: itens da
+#    prescrição (DT_COLETA, DT_APROVACAO, status, NR_SEQ_RESULTADO).
+#  - CorLabF0/loadPatientData (feature 7008 "Consulta de Resultados"): atendimento
+#    e CD_PESSOA_FISICA de uma prescrição.
+#  - Exames sem série no gráfico (ex.: gasometria): lê os liberados (status 40)
+#    do mesmo atendimento, como o `conferir`.
+#  - Notas clínicas do PEP (feature 281): serviço ainda NÃO mapeado (precisa de
+#    um HAR da aba "Notas clínicas" > Filtrar). O CLI avisa e segue.
+# =====================================================================
+F0_FEAT = {"Feature-Code": "7008", "Active-Feature-Code": "7008", "Feature-Route": "corlabf0"}
+HIST_DIAS_PADRAO = 90
+HIST_MAX_PAGINAS = 6          # 6 páginas x ~6 prescrições
+HIST_LIMIAR_PCT = 50.0        # variação relativa que gera alerta
+HIST_FALLBACK_MAX = 3         # nº de prescrições liberadas abertas no fallback (caro)
+# Séries do gráfico do Hemograma (código da série -> nrSeqExame do subexame)
+HEMO_CHART = {
+    "0444_003": 536, "0444_004": 1473, "0444_006": 1472, "0444_007": 540, "0444_008": 541,
+    "0444_009": 542, "0444_010": 539, "0444_021": 1489, "0444_024": 545, "0444_025": 546,
+    "0444_027": 547, "0444_031": 549, "0444_032": 550, "0444_037": 1480, "0444_044": 1487,
+    "LYMPH": 36603, "EO": 36602, "BASO": 36607, "Blas": 36605, "Prom": 36606,
+}
+# Grupos de exame -> palavras-chave para achar o trecho certo da evolução clínica.
+HIST_GRUPOS = {
+    "renal": {"exames": ("CREA", "UREA", "CLCR", "CRU", "MICRO", "PTUR", "PTU24"),
+              "nomes": ("creatin", "ureia", "uréia", "clearance", "proteinuria"),
+              "palavras": ("FUNÇÃO RENAL", "FUNCAO RENAL", "DIURESE", "DIÁLISE", "DIALISE", "HEMODIÁLISE",
+                           "HEMODIALISE", "TRS", "IRA", "LRA", "IRC", "DRC", "OLIGÚRIA", "OLIGURIA", "ANÚRIA",
+                           "ANURIA", "CREATININA", "UREIA", "URÉIA", "NEFRO")},
+    "hemato": {"exames": ("HC", "HB", "HT", "PLQ", "PLT", "RET", "COAG", "TAP", "TTPA", "RNI", "FIB", "DDIM"),
+               "nomes": ("hemograma", "hemoglob", "hemat", "plaquet", "reticul", "protromb", "tromboplast"),
+               "palavras": ("SANGRAMENTO", "HEMORRAG", "TRANSFUS", "CONCENTRADO DE HEMÁCIAS", "CH ", "HEMÁCIAS",
+                            "PLAQUETAS", "ANEMIA", "HEMOGLOBINA", "ANTICOAG", "HEPARINA", "VARFARINA", "MELENA",
+                            "HEMATÊMESE", "PLAQUETOPENIA", "LEUCOCITOSE", "NEUTROPENIA")},
+    "eletrolitos": {"exames": ("NA+", "K+", "MG+", "CA", "CAI", "CAIO", "P", "FOSF", "CL", "CL-", "GASV", "GASA", "GASO"),
+                    "nomes": ("sódio", "sodio", "potássio", "potassio", "magnés", "magnes", "cálcio", "calcio",
+                              "fósforo", "fosforo", "cloro", "gasometria"),
+                    "palavras": ("REPOSIÇÃO", "REPOSICAO", "DIÁLISE", "DIALISE", "HIPERCALEMIA", "HIPOCALEMIA",
+                                 "HIPONATREMIA", "HIPERNATREMIA", "KCL", "SORO", "DISTÚRBIO", "DISTURBIO",
+                                 "HIDRATAÇÃO", "ACIDOSE", "ALCALOSE", "VENTILAÇÃO", "VENTILACAO", "VM", "IOT",
+                                 "FUNÇÃO RENAL", "DIURESE")},
+    "hepatico": {"exames": ("TGO", "TGP", "BILI", "BT", "BD", "FA", "GGT", "ALB", "AMIL", "LIP", "DHL"),
+                 "nomes": ("bilirrub", "transamin", "fosfatase", "gama", "albumin", "amilase", "lipase", "desidrogen"),
+                 "palavras": ("FUNÇÃO HEPÁTICA", "FUNCAO HEPATICA", "HEPAT", "ICTERÍCIA", "ICTERICIA", "CIRROSE",
+                              "COLESTASE", "PANCREAT", "ABDOME", "TGO", "TGP", "BILIRRUBINA")},
+    "infeccioso": {"exames": ("PCR", "PCRP", "VHS", "PCT", "LAC", "LACT", "URO", "HEMOC", "CULT"),
+                   "nomes": ("proteína c", "proteina c", "procalcit", "lactato", "cultura", "urocultura", "hemocultura"),
+                   "palavras": ("INFECÇÃO", "INFECCAO", "SEPSE", "CHOQUE", "ANTIBIÓTICO", "ANTIBIOTICO", "ATB",
+                                "FEBRE", "FEBRIL", "PNEUMONIA", "ITU", "FOCO", "CULTURA", "MEROPENEM", "VANCOMICINA",
+                                "PIPERACILINA", "CEFTRIAXONA", "LACTATO")},
+    "metabolico": {"exames": ("GLI", "GLIC", "HBA1C"),
+                   "nomes": ("glicose", "glicemia", "hemoglobina glicada"),
+                   "palavras": ("GLICEMIA", "INSULINA", "HIPOGLICEMIA", "HIPERGLICEMIA", "DIABETES", "DM", "HGT",
+                                "DIETA", "NPT", "JEJUM")},
+}
+_HIST_SALVOS = []      # (Resultado, item, ResultVO relido) de cada save ok nesta execução
+
+
+def hist_grupo(cd, nm=""):
+    c = str(cd or "").upper().strip(); n = _sem_acento(nm or "").lower()
+    for g, d in HIST_GRUPOS.items():
+        if c in d["exames"] or any(_sem_acento(x).lower() in n for x in d["nomes"]):
+            return g
+    return None
+
+
+def trecho_relevante(texto, cd, nm="", largura=220, max_trechos=3):
+    """Destaca na evolução os trechos ligados ao grupo do exame (palavras-chave em >>> <<<)."""
+    txt = re.sub(r"<[^>]+>", " ", str(texto or "")); txt = re.sub(r"\s+", " ", txt).strip()
+    g = hist_grupo(cd, nm)
+    if not g:
+        return txt[:largura * 2] + ("…" if len(txt) > largura * 2 else ""), None
+    up = _sem_acento(txt).upper(); out = []; usados = []
+    for p in HIST_GRUPOS[g]["palavras"]:
+        i = up.find(_sem_acento(p).upper())
+        if i < 0 or any(a <= i <= b for a, b in usados):
+            continue
+        a, b = max(0, i - largura // 3), min(len(txt), i + largura)
+        usados.append((a, b))
+        out.append(("…" if a else "") + txt[a:i] + ">>>" + txt[i:i + len(p)] + "<<<" + txt[i + len(p):b] + ("…" if b < len(txt) else ""))
+        if len(out) >= max_trechos:
+            break
+    return (" | ".join(out) if out else None), g
+
+
+def notas_clinicas(z, atend, n=1):
+    """Últimas N evoluções do PEP. Retorna (lista, motivo_se_vazia).
+    O serviço da aba "Notas clínicas" (PEP, feature 281, WDBPanel EVOLUCAO_PACIENTE) ainda não foi
+    mapeado sem HAR: devolve ([], motivo) e o chamador avisa e segue (nunca bloqueia)."""
+    return [], "notas clínicas do PEP não disponíveis no CLI (serviço ainda não mapeado; confira no PEP)"
+
+
+def _dt_local(v):
+    if isinstance(v, dict) and "dados" in v:
+        v = v.get("dados")
+    return instant_to_local(v)
+
+
+def _presc_info(z, nr, cache):
+    """Itens da prescrição (datas/status) + atendimento. Só leitura, com cache."""
+    nr = int(nr)
+    if nr in cache:
+        return cache[nr]
+    d = z.post("CorLabF3/ativarExameLabResultItemAsHashMap", [H({"NR_PRESCRICAO": nr, "IE_GERAR_RESULT_PRESCR": False,
+               "IE_INTEG_CURVA_AMOSTRA": "N", "NR_SEQ_GRUPO_EXAME": 0})]) or {}
+    itens = d.get("dados") or []
+    info = {"nr": nr, "itens": itens, "atend": None, "pf": None}
+    if itens:
+        try:
+            p = z.post("CorLabF0/loadPatientData", [H({"NR_PRESCRICAO": nr, "NR_SEQ_EXAME": itens[0].get("NR_SEQ_EXAME"),
+                       "NR_ATENDIMENTO": "", "NR_SEQ_GRUPO": "", "IE_FORMATO_RESULT": ""})], feat=F0_FEAT) or {}
+            info["atend"] = p.get("NR_ATENDIMENTO"); info["pf"] = p.get("CD_PESSOA_FISICA")
+        except Exception:
+            pass
+    cache[nr] = info
+    return info
+
+
+def _item_do_exame(info, nse=None, cd=None):
+    for it in info["itens"]:
+        if (nse is not None and it.get("NR_SEQ_EXAME") == nse) or (cd and str(it.get("CD_EXAME", "")).upper() == str(cd).upper()):
+            return it
+    return None
+
+
+def _chart(z, seq_res, nr, nse):
+    try:
+        return z.post("CorLabF3/getChartRecords", [H({"NR_SEQ_RESULTADO": seq_res, "NR_PRESCRICAO": int(nr), "NR_SEQ_EXAME": nse})]) or {}
+    except Exception:
+        return {}
+
+
+def hist_series(z, nr, seq_res, nse, cd, dias, cache, max_pag=HIST_MAX_PAGINAS):
+    """{serie: {presc: valor}} das prescrições ANTERIORES (exclui a atual), dentro de `dias`."""
+    limite = dt.datetime.now(TZ) - dt.timedelta(days=dias)
+    series, vistos = {}, set()
+    cur_nr, cur_res = int(nr), seq_res
+    for _ in range(max_pag):
+        ch = _chart(z, cur_res, cur_nr, nse)
+        ch = {k: v for k, v in ch.items() if v}
+        if not ch:
+            break
+        ordem = []
+        for k, lst in ch.items():
+            for e in lst:
+                p = e.get("NR_PRESCRICAO")
+                if p is None:
+                    continue
+                series.setdefault(k, {})[int(p)] = e.get("QT_RESULT")
+                if int(p) not in ordem:
+                    ordem.append(int(p))
+        novos = [p for p in ordem if p not in vistos]
+        vistos.update(ordem)
+        if not novos:
+            break
+        mais_antigo = min(novos)
+        if mais_antigo == cur_nr:
+            break
+        info = _presc_info(z, mais_antigo, cache)
+        it = _item_do_exame(info, nse, cd)
+        d = _dt_local((it or {}).get("DT_COLETA")) or _dt_local((it or {}).get("DT_APROVACAO"))
+        if not it or (d and d < limite) or len(ordem) < 2:
+            break
+        cur_nr, cur_res = mais_antigo, it.get("NR_SEQ_RESULTADO")
+    for k in series:
+        series[k].pop(int(nr), None)
+    return series
+
+
+def _vo_numericos(vo):
+    """{nrSeqExame: (nome, valor_float, unidade)} dos subexames numéricos com valor."""
+    out = {}
+    for x in (vo or {}).get("subExams") or []:
+        if x.get("ieFormatoResultado") not in ("V", "DV"):
+            continue
+        v = _num_or_none(x.get("qtResultado"))
+        if v is None:
+            continue
+        out[x["nrSeqExame"]] = ((x.get("nmExame") or "").strip(), v, x.get("dsUnidadeMedida") or "")
+    return out
+
+
+def _hist_fallback_liberados(z, atend, cd, nr_atual, dias, cache, limite_presc=HIST_FALLBACK_MAX):
+    """Sem série no gráfico: abre (só leitura) as últimas prescrições LIBERADAS do mesmo atendimento."""
+    ini = dt.datetime.now(TZ) - dt.timedelta(days=dias); fim = dt.datetime.now(TZ)
+    try:
+        rows, _ = listar_liberados(z, ini, fim, atend=atend)
+    except Exception:
+        return {}
+    prs = sorted({int(r["NR_PRESCRICAO"]) for r in rows if r.get("NR_PRESCRICAO") and int(r["NR_PRESCRICAO"]) != int(nr_atual)}, reverse=True)
+    out = {}; abertas = 0
+    for p in prs:
+        if abertas >= limite_presc:
+            break
+        info = _presc_info(z, p, cache)
+        it = _item_do_exame(info, None, cd)
+        if not it or it.get("IE_STATUS_ATEND") != LIBERADO_STATUS:
+            continue
+        try:
+            t = Resultado(z, atend, p, write=False).abrir()
+            if it["NR_SEQ_PRESCR"] not in t.nodes:
+                continue
+            vo = t.build(it["NR_SEQ_PRESCR"])["ResultVO"]
+        except Exception:
+            continue
+        abertas += 1
+        for sq, (nm, v, un) in _vo_numericos(vo).items():
+            out.setdefault(sq, {})[p] = v
+    return out
+
+
+def _tendencia(vals):
+    """vals em ordem cronológica (antigo→novo)."""
+    v = [x for x in vals if x is not None][-4:]
+    if len(v) < 2:
+        return "sem tendência (1 valor)"
+    a, b = v[0], v[-1]
+    base = abs(a) if a else (abs(b) or 1.0)
+    pct = (b - a) / base * 100
+    if abs(pct) < 10:
+        return "estável"
+    return "subindo" if pct > 0 else "caindo"
+
+
+def _critico(nm, cd, v):
+    keys = _campo_keys(nm, exame_cd=cd)
+    b, _k = _lookup_bound(CRITICO_BOUNDS, keys)
+    if not b or v is None:
+        return False
+    lo, hi = b
+    return (lo is not None and v < lo) or (hi is not None and v > hi)
+
+
+def historico_exame(z, it, vo, atend, dias=HIST_DIAS_PADRAO, cache=None, nr=None):
+    """Compara o VO atual com os anteriores. Devolve dict com campos e avisos (só leitura)."""
+    cache = {} if cache is None else cache
+    cd = str(it.get("CD_EXAME") or "").upper().strip()
+    nm_ex = (it.get("NM_EXAME") or "").strip()
+    nr = int(nr or it.get("NR_PRESCRICAO") or (vo or {}).get("exam", {}).get("nrPrescricao") or 0)
+    nse = it.get("NR_SEQ_EXAME"); seq_res = it.get("NR_SEQ_RESULTADO")
+    atuais = _vo_numericos(vo)
+    try:
+        st_vo = int((vo or {}).get("ieStatusAtend") or 0)
+    except (TypeError, ValueError):
+        st_vo = 0
+    nao_digitado = st_vo < 35 and atuais and all(v == 0 for _n, v, _u in atuais.values())
+    if nao_digitado:   # em Digitação com tudo 0 = ainda não digitado: mostra só o histórico
+        atuais = {sq: (n, None, u) for sq, (n, v, u) in atuais.items()}
+    if not atuais and st_vo < 35:   # campos numéricos ainda vazios (None)
+        atuais = {x["nrSeqExame"]: ((x.get("nmExame") or "").strip(), None, x.get("dsUnidadeMedida") or "")
+                  for x in (vo or {}).get("subExams") or [] if x.get("ieFormatoResultado") in ("V", "DV")}
+        nao_digitado = bool(atuais)
+    main = main_sub(vo) if vo else None
+    series = hist_series(z, nr, seq_res, nse, cd, dias, cache) if seq_res else {}
+    if (main and len(atuais) > 1 and cd not in {k.upper() for k in series}
+            and not (atuais.get(main["nrSeqExame"], (0, None))[1])):
+        atuais.pop(main["nrSeqExame"], None)   # linha-título (ex.: "Gasometria Venosa"), não é analito
+    # séries do gráfico -> nrSeqExame do VO
+    por_sq = {}
+    for k, vals in series.items():
+        if cd == HEMO_SIGLA:
+            sq = HEMO_CHART.get(k)
+        elif k.upper() == cd and main:
+            sq = main["nrSeqExame"]
+        else:
+            sq = next((s for s, (n, v, u) in atuais.items() if _slug(n) == _slug(k)), None)
+        if sq is None:
+            continue
+        por_sq[sq] = vals
+    fonte = "gráfico Resultados anteriores"
+    if not por_sq:
+        por_sq = _hist_fallback_liberados(z, atend, cd, nr, dias, cache)
+        fonte = "liberados do atendimento"
+    limite = dt.datetime.now(TZ) - dt.timedelta(days=dias)
+    campos = []
+    for sq, (nm, cur, un) in atuais.items():
+        hist = []
+        for p, v in (por_sq.get(sq) or {}).items():
+            info = _presc_info(z, p, cache)
+            itp = _item_do_exame(info, nse, cd) or {}
+            st = itp.get("IE_STATUS_ATEND")
+            d = _dt_local(itp.get("DT_COLETA")) or _dt_local(itp.get("DT_APROVACAO"))
+            if d and d < limite:
+                continue
+            v = _num_or_none(v)
+            if v is None or (v == 0 and (st or 0) < 35):
+                continue      # não digitado
+            hist.append({"prescricao": p, "atendimento": info.get("atend"), "dt": d, "valor": v, "status": st})
+        hist.sort(key=lambda h: (h["dt"] or dt.datetime(1970, 1, 1, tzinfo=TZ), h["prescricao"]))
+        c = {"sq": sq, "campo": nm, "atual": cur, "unidade": un, "historico": hist, "avisos": []}
+        if cur is None:
+            if hist:
+                c["tendencia"] = _tendencia([h["valor"] for h in hist])
+            elif len(atuais) == 1:
+                c["avisos"].append("sem resultado anterior")
+        elif not hist:
+            if len(atuais) == 1 or sq == (main or {}).get("nrSeqExame") or (cd == HEMO_SIGLA and sq in (1473, 1489)):
+                c["avisos"].append("sem resultado anterior")
+        else:
+            ult = hist[-1]["valor"]
+            c["delta"] = cur - ult
+            c["pct"] = (cur - ult) / abs(ult) * 100 if ult else None
+            c["tendencia"] = _tendencia([h["valor"] for h in hist] + [cur])
+            if c["pct"] is not None and abs(c["pct"]) > HIST_LIMIAR_PCT and abs(cur - ult) > 1e-9:
+                c["avisos"].append(f"mudança grande vs último ({c['pct']:+.0f}%)")
+            elif c["pct"] is None and cur and not ult:
+                c["avisos"].append("mudança grande vs último (antes 0)")
+            ca, cu = _critico(nm, cd, ult), _critico(nm, cd, cur)
+            if cu and not ca:
+                c["avisos"].append("passou a faixa crítica (antes não era)")
+            elif ca and not cu:
+                c["avisos"].append("saiu da faixa crítica")
+        campos.append(c)
+    sem_hist = not any(c["historico"] for c in campos)
+    return {"exame": cd, "nome": nm_ex, "prescricao": nr, "fonte": fonte, "campos": campos,
+            "sem_historico": sem_hist, "nao_digitado": bool(nao_digitado)}
+
+
+def _fmt_d(d):
+    return d.strftime("%d/%m %H:%M") if d else "?"
+
+
+def print_historico(h, compacto=True, max_ant=4, so_principais=False):
+    cab = f"  HISTÓRICO {h['exame']} {h['nome'][:40]}"
+    print(cab)
+    if not h["campos"]:
+        print("    (sem campo numérico salvo para comparar)")
+        return
+    for c in h["campos"]:
+        if so_principais and not c["avisos"] and not c["historico"]:
+            continue
+        cur = f"{_fmt_val(c['atual'])} {c['unidade']}".strip() if c["atual"] is not None else "(não digitado)"
+        if not c["historico"]:
+            if c["avisos"]:
+                print(f"    {c['campo'][:28]:<28} atual {cur} | AVISO: sem resultado anterior")
+            continue
+        ant = c["historico"][-max_ant:]
+        txt = " → ".join(f"{_fmt_val(x['valor'])} ({_fmt_d(x['dt'])}" + (f" AT {x['atendimento']}" if x.get("atendimento") else "") + ")" for x in ant)
+        pct = f" ({c['pct']:+.0f}%)" if c.get("pct") is not None else ""
+        if c["atual"] is None:
+            linha = f"    {c['campo'][:28]:<28} atual {cur} | último {_fmt_val(ant[-1]['valor'])} | {c.get('tendencia', '')}"
+        else:
+            linha = f"    {c['campo'][:28]:<28} atual {cur} | Δ {_fmt_val(round(c['delta'], 4))}{pct} | {c['tendencia']}"
+        if c["avisos"]:
+            linha += " | ⚠ " + "; ".join(c["avisos"])
+        print(linha)
+        if not compacto or c["avisos"] or len(h["campos"]) <= 3:
+            print(f"      anteriores: {txt}")
+
+
+def hist_resumo_avisos(hs, notas_motivo=None):
+    """Resumo final: exames sem anterior / com mudança / sem evolução compatível."""
+    sem_ant = [h["exame"] for h in hs if h["sem_historico"]]
+    grandes = [f"{h['exame']}:{c['campo']}" for h in hs for c in h["campos"] if any(a.startswith("mudança") or "crítica" in a for a in c["avisos"])]
+    print("\n## Resumo do histórico (só leitura — nada foi liberado)")
+    print(f"  Sem resultado anterior: {', '.join(sem_ant) if sem_ant else '(nenhum)'}")
+    print(f"  Mudança grande / faixa crítica: {', '.join(grandes) if grandes else '(nenhuma)'}")
+    if notas_motivo:
+        print(f"  Sem evolução clínica compatível: {', '.join(h['exame'] for h in hs) or '(nenhum)'} — {notas_motivo}")
+
+
+def print_notas(z, atend, n, exames):
+    """Imprime as últimas N evoluções; devolve o motivo quando não há (para o resumo)."""
+    try:
+        notas, motivo = notas_clinicas(z, atend, n)
+    except Exception as e:
+        notas, motivo = [], f"erro ao ler notas clínicas: {e}"
+    if not notas:
+        print(f"  AVISO: sem evolução clínica compatível ({motivo})")
+        return motivo
+    for nt in notas[:n]:
+        print(f"  Nota {_fmt_d(nt.get('dt'))} | {nt.get('profissional') or '?'} | {nt.get('tipo') or ''}")
+        achou = False
+        for cd, nm in exames:
+            tr, g = trecho_relevante(nt.get("texto"), cd, nm)
+            if tr and g:
+                print(f"    [{cd} → {g}] {tr}"); achou = True
+        if not achou:
+            print(f"    AVISO: sem evolução clínica compatível com {', '.join(c for c, _ in exames)} nesta nota")
+    return None
+
+
+def hist_pos_salvar(z, salvos, dias=HIST_DIAS_PADRAO, notas=1):
+    """Chamado depois de resultado/hemo/gaso. Nunca bloqueia: erros viram AVISO."""
+    if not salvos:
+        return
+    print("\n== Comparação com o histórico do paciente (só leitura) ==")
+    cache, hs = {}, []
+    for t, it, vo in salvos:
+        try:
+            h = historico_exame(z, it, vo, t.atend, dias, cache, nr=t.nr)
+            print_historico(h, compacto=True)
+            if h["sem_historico"]:
+                print(f"    AVISO: sem resultado anterior para {h['exame']}")
+            hs.append(h)
+        except Exception as e:
+            print(f"  AVISO: histórico de {it.get('CD_EXAME')} não consultado ({e}) — o resultado continua salvo")
+    atend = salvos[0][0].atend
+    motivo = print_notas(z, atend, notas, [(it.get("CD_EXAME"), it.get("NM_EXAME")) for _, it, _ in salvos])
+    hist_resumo_avisos(hs, motivo)
+
+
+def cmd_historico(z, atend, exames=None, dias=HIST_DIAS_PADRAO, notas=1, as_json=False):
+    """Só leitura: valores anteriores + tendência + Δ para os exames do atendimento."""
+    filtro = {e.upper() for e in (exames or [])}
+    cache = {}
+    alvos = []   # (Resultado, item)
+    data, telas = abrir_telas(z, atend, write=False)
+    for t in telas:
+        for it in t.items:
+            if it.get("IE_STATUS_ATEND") == 30 and not exame_externo_bloqueado(it) and (not filtro or str(it.get("CD_EXAME", "")).upper() in filtro):
+                alvos.append((t, it))
+    origem = "em Digitação (30)"
+    if not alvos:
+        # sem nada em digitação: usa a prescrição liberada mais recente de cada exame
+        ini = dt.datetime.now(TZ) - dt.timedelta(days=dias); fim = dt.datetime.now(TZ)
+        rows, _ = listar_liberados(z, ini, fim, atend=atend)
+        vistos = set()
+        for p in sorted({int(r["NR_PRESCRICAO"]) for r in rows}, reverse=True):
+            t = Resultado(z, atend, p, write=False).abrir()
+            for it in t.items:
+                c = str(it.get("CD_EXAME", "")).upper()
+                if it.get("IE_STATUS_ATEND") != LIBERADO_STATUS or c in vistos or (filtro and c not in filtro) or exame_externo_bloqueado(it):
+                    continue
+                vistos.add(c); alvos.append((t, it))
+            if filtro and filtro <= vistos:
+                break
+            if not filtro and alvos:
+                break
+        origem = "liberado mais recente (40)"
+    if not as_json:
+        print("HISTÓRICO DO PACIENTE — só leitura (nada é salvo, aprovado ou liberado)")
+        print(f"Atendimento {atend} | exames {origem} | janela {dias} dias | horário America/Sao_Paulo")
+    if not alvos:
+        print("Nenhum exame encontrado para comparar."); return
+    hs = []
+    for t, it in sorted(alvos, key=lambda x: (x[0].nr, x[1].get("NR_SEQ_PRESCR") or 0)):
+        if it["NR_SEQ_PRESCR"] not in t.nodes:
+            continue
+        vo = t.build(it["NR_SEQ_PRESCR"])["ResultVO"]
+        if not any(x.get("ieFormatoResultado") in ("V", "DV") for x in vo.get("subExams") or []):
+            if not as_json:
+                print(f"  {it['CD_EXAME']:<8} {it['NM_EXAME'].strip()[:40]}: exame sem campo numérico — sem comparação")
+            continue
+        h = historico_exame(z, it, vo, atend, dias, cache, nr=t.nr)
+        h["prescricao"] = t.nr
+        hs.append(h)
+        if not as_json:
+            print(f"\n-- prescr {t.nr} | fonte: {h['fonte']}")
+            print_historico(h, compacto=False, max_ant=12)
+            if h["sem_historico"]:
+                print(f"    AVISO: sem resultado anterior para {h['exame']}")
+    if as_json:
+        notas_l, motivo = notas_clinicas(z, atend, notas)
+        print(json.dumps({"atendimento": atend, "origem": origem, "dias": dias, "exames": hs,
+                          "notas": notas_l, "notas_motivo": motivo}, ensure_ascii=False, indent=1, default=str))
+        return hs
+    print("\n-- Evolução clínica (PEP)")
+    motivo = print_notas(z, atend, notas, [(h["exame"], h["nome"]) for h in hs])
+    hist_resumo_avisos(hs, motivo)
+    return hs
 
 
 
@@ -3449,17 +3946,20 @@ def main():
     r = sp.add_parser("resultado"); r.add_argument("atendimento", type=int)
     r.add_argument("--exame", action="append", required=True, help="SIGLA=valor ou SIGLA.campo=valor, ex.: TGO=20.7, BILI.total=0.64")
     r.add_argument("--dry-run", action="store_true"); r.add_argument("--forcar", action="store_true")
+    r.add_argument("--sem-historico", action="store_true", help="não compara com o histórico após salvar")
     r.add_argument("--dump-payload", help="grava os payloads do save neste arquivo")
     g = sp.add_parser("gaso"); g.add_argument("atendimento", type=int)
     for _, opt, _ in GASO_FIELDS: g.add_argument("--" + opt, type=str)
     g.add_argument("--obs", type=str, help="observação da gasometria")
     g.add_argument("--dry-run", action="store_true"); g.add_argument("--forcar", action="store_true")
+    g.add_argument("--sem-historico", action="store_true", help="não compara com o histórico após salvar")
     g.add_argument("--dump-payload", help="grava o payload do save da gasometria neste arquivo")
     hm = sp.add_parser("hemo", help="digita e salva (sem liberar) Hemograma Completo")
     hm.add_argument("atendimento", type=int)
     for o in ("rbc", "hgb", "hct", "vcm", "hcm", "chcm", "rdw", "wbc", "neu", "lym", "mon", "eos", "bas", "plt", "vpm"):
         hm.add_argument("--" + o, type=str, required=True)
     hm.add_argument("--dry-run", action="store_true"); hm.add_argument("--forcar", action="store_true")
+    hm.add_argument("--sem-historico", action="store_true", help="não compara com o histórico após salvar")
     hm.add_argument("--dump-payload", help="grava o payload do save neste arquivo")
     cf = sp.add_parser("conferir",
                        help="só leitura: audita TODOS os exames liberados (status 40) do período")
@@ -3467,6 +3967,14 @@ def main():
     cf.add_argument("--ate", help="fim DT_PRESCRICAO DD/MM/AAAA[ HH:MM] (padrão: agora)")
     cf.add_argument("--at", dest="atendimento", type=int, help="filtra um atendimento")
     cf.add_argument("--json", dest="as_json", action="store_true", help="saída JSON")
+    cf.add_argument("--sem-historico", action="store_true", help="não compara com resultados anteriores do paciente")
+    cf.add_argument("--dias", type=int, default=HIST_DIAS_PADRAO, help="janela do histórico (padrão 90)")
+    hi = sp.add_parser("historico", help="só leitura: resultados anteriores do paciente, tendência e Δ + evolução clínica")
+    hi.add_argument("atendimento", type=int)
+    hi.add_argument("--exame", action="append", help="sigla do Tasy (repita): CREA, HC…; padrão: todos")
+    hi.add_argument("--dias", type=int, default=HIST_DIAS_PADRAO, help="janela em dias (padrão 90)")
+    hi.add_argument("--notas", type=int, default=1, help="nº de evoluções clínicas (padrão 1)")
+    hi.add_argument("--json", dest="as_json", action="store_true")
     dl = sp.add_parser("db-login", help="valida e grava o acesso do portal DB Diagnósticos (E-DB), permissão 600")
     dl.add_argument("--cpf", help="CPF do usuário do portal DB (ou DB_CPF)")
     dl.add_argument("--password-stdin", action="store_true", help="lê a senha do stdin (ou DB_PASSWORD)")
@@ -3560,13 +4068,20 @@ def main():
     elif a.cmd == "hemo":
         cmd_hemo(z, a.atendimento, a, a.dry_run, a.forcar, a.dump_payload)
     elif a.cmd == "conferir":
-        cmd_conferir(z, a.de, a.ate, a.atendimento, a.as_json)
+        cmd_conferir(z, a.de, a.ate, a.atendimento, a.as_json, historico=not a.sem_historico, dias=a.dias)
+    elif a.cmd == "historico":
+        cmd_historico(z, a.atendimento, a.exame, a.dias, a.notas, a.as_json)
     elif a.cmd == "db-buscar":
         cmd_db_buscar(z, a.atendimento, a.chave, a.pedido, a.de, a.ate, a.as_json)
     elif a.cmd == "db-anexar":
         cmd_db_anexar(z, a.atendimento, a.exame, a.dry_run, a.substituir, a.chave, a.pedido, a.de, a.ate, a.salvar_pdf)
     else:
         cmd_gaso(z, a.atendimento, a, a.dry_run, a.forcar, a.dump_payload)
+    if a.cmd in ("resultado", "hemo", "gaso") and _HIST_SALVOS and not a.sem_historico:
+        try:
+            hist_pos_salvar(z, _HIST_SALVOS)
+        except Exception as e:   # nunca bloqueia: o resultado já está salvo
+            print(f"AVISO: comparação com o histórico não concluída ({e}) — resultado salvo normalmente")
     log(f"[{time.time() - t0:.1f}s, {z.ncalls} chamadas de serviço]")
 
 
