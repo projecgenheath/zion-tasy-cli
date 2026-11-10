@@ -213,13 +213,64 @@ python3 zion.py hemo 123456 --rbc 4.04 --hgb 13.3 --hct 36 --vcm 89.1 --hcm 32.8
   --wbc 14.06 --neu 82.1 --lym 11.9 --mon 5.6 --eos 0.3 --bas 0.1 --plt 174 --vpm 11.7 --dry-run
 ```
 
+## Laudos do DB Diagnósticos (E-DB) → anexar no Tasy
+
+As sorologias (TOXG, TOXM…) são feitas pelo **DB Diagnósticos**. Nelas o CLI **não digita valores**. Ele baixa o laudo em PDF no portal E-DB e **anexa** ao exame do Tasy, pela mesma ação do menu *Anexar exame PDF* (tabela `RESULT_LABORATORIO`). **Nada é liberado.**
+
+### ⚠️ Regra: um PDF por exame
+Cada exame do Tasy recebe **só o PDF dele**:
+- o PDF do TOXG vai para o exame *Toxoplasmose IgG*;
+- o PDF do TOXM vai para o exame *Toxoplasmose IgM*.
+
+**Nunca** anexe um PDF único com vários exames. O CLI pede ao portal o laudo de **um** procedimento por vez (`SeqProcedimento`) e lê o texto do PDF (`pdftotext`, pacote poppler-utils). Ele **recusa** o PDF quando:
+- o nome do paciente não é o mesmo do Tasy;
+- o PDF traz outro exame do mesmo pedido.
+
+### Passo a passo
+1. **Acesso ao portal DB.** Faça uma vez; depois o CLI renova a sessão sozinho:
+   ```bash
+   printf '%s' "$DB_SENHA" | python3 zion.py db-login --cpf 00000000000 --password-stdin
+   # serviço solicitante padrão: 2517530 (troque com --serv-sol)
+   # se o portal pedir 2 fatores, o código chega por e-mail/SMS; rode de novo com --otp CODIGO
+   ```
+   O CPF e a senha ficam em `~/.config/zion-cli/db_credentials.json` (permissão 600), fora do repositório. Para apagar: `python3 zion.py db-logout`. Para conferir: `python3 zion.py db-whoami` (mostra o CPF mascarado).
+2. **Ver o que existe** (só leitura):
+   ```bash
+   python3 zion.py db-buscar 123456
+   ```
+   Lista o pedido do DB e o status de cada exame, os exames do Tasy em Digitação (status 30) com o par DB de cada um, e o anexo que já existe.
+3. **Ensaio**: baixa e confere cada PDF, mas não grava nada no Tasy:
+   ```bash
+   python3 zion.py db-anexar 123456 --dry-run [--exame TOXG] [--salvar-pdf /tmp/laudos]
+   ```
+4. **Anexar de verdade:**
+   ```bash
+   python3 zion.py db-anexar 123456            # todos os exames do DB em Digitação
+   python3 zion.py db-anexar 123456 --exame TOXM
+   ```
+   Para cada exame, o CLI faz o seguinte:
+   1. baixa só o PDF daquele exame e confere o paciente;
+   2. envia o arquivo como `SIGLA_DBpedido.pdf`;
+   3. grava o anexo no exame;
+   4. **relê** o exame: precisa haver **exatamente 1** anexo, e é o arquivo certo;
+   5. confirma que o status continua 30.
+
+   O exame que já tem anexo é **pulado**. Para trocar o anexo, use `--substituir`: o CLI faz *Desfazer exame PDF* e anexa o novo.
+
+### Opções úteis
+- **Vínculo com o pedido DB.** O CLI procura o pedido pelo número do atendimento, pelas prescrições e pelo nome do paciente, e só aceita o nome **idêntico**. Se a busca falhar, use `--chave X` ou `--pedido N`.
+- **Período.** A busca de exames no Tasy cobre, por padrão, os últimos 30 dias. Use `--de` e `--ate` para mudar.
+- **Siglas DB → Tasy.** A tabela padrão é `DB_SIGLAS` em `zion.py` (`TOXG→TOXG`, `TOXM→TOXM`). Para acrescentar siglas sem mexer no código, crie `~/.config/zion-cli/db_siglas.json`, por exemplo `{"HBSAG": ["HBSAG"], "CMVG": ["CMVG"]}`.
+- **Pré-requisito.** O exame precisa estar em **Digitação (30)**. O Tasy só permite anexar com status < 35.
+
 ## Segurança
 
 - **Nunca libera** resultados; só salva.
 - Rode sempre `--dry-run` antes de salvar.
 - Depois de salvar, o CLI relê e compara; confira a releitura.
 - Avisos de valor fora da referência / consistência / eTFG são esperados e **não** cancelam o save.
-- Não versionar `.session.json`, HARs, backups ou payloads: contêm tokens e dados de pacientes.
+- Laudos DB: **um PDF por exame**, nunca um PDF combinado; o anexo não libera.
+- Não versionar `.session.json`, `db_credentials.json`, PDFs de laudo, HARs, backups ou payloads: contêm tokens e dados de pacientes.
 
 ## templates.json
 

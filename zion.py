@@ -13,6 +13,10 @@ Uso:
   python3 zion.py resultado AT --exame NA+=134.9 [--exame ...] [--dry-run] [--forcar]
   python3 zion.py gaso AT --na 134.9 --k 4.37 --ica 1.08 --cl 105.7 [--glu --lac --ph ...] [--dry-run] [--forcar]
   (nunca libera; após salvar relê via build e compara)
+  python3 zion.py db-login --cpf CPF --password-stdin [--serv-sol 2517530] [--otp COD]
+  python3 zion.py db-buscar AT [--chave X] [--pedido N] [--json]   # só leitura
+  python3 zion.py db-anexar AT [--exame TOXG] [--dry-run] [--substituir]
+  (laudo do DB Diagnósticos: UM PDF POR EXAME, anexado sem liberar)
   Sorologias / exames externos NÃO são digitados (vão p/ outro lab).
   Testes rápidos (TRTOXO, HIV, TRS, …) continuam normais. sorologia ≠ teste rápido.
   TRTOXO=NR propaga p/ Anticorpos IgG + IgM (campo principal sem opções).
@@ -2818,6 +2822,583 @@ def cmd_conferir(z, de=None, ate=None, atend=None, as_json=False):
 
 
 
+# =====================================================================
+# ---------- DB Diagnósticos (portal E-DB) → anexar laudo PDF ----------
+# REGRA: um PDF por exame. Cada exame do Tasy recebe SÓ o laudo dele.
+# Nunca libera/aprova nada no Tasy: só grava o anexo (RESULT_LABORATORIO,
+# IE_FORMATO_TEXTO=3), igual ao clique direito "Anexar exame PDF".
+# =====================================================================
+EDB_URL = (os.environ.get("DB_URL") or "https://out-prd.diagnosticosdobrasil.com.br/Portal/").rstrip("/") + "/"
+EDB_SERV_SOL_PADRAO = "2517530"
+EDB_ANON_CSRF = "T6C+9iB49TLra4jEsMeSckDMNhQ="  # token anônimo padrão do OutSystems (público)
+# telas/ações do portal (OutSystems Reactive). apiVersion é lida dos bundles JS e guardada em cache.
+EDB_ACTIONS = {
+    "ValidarServicoSolicitante": ("Common/Login", "Common.Login", "Portal.Common.Login.mvc.js"),
+    "DoLogin": ("Common/Login", "Common.Login", "Portal.Common.Login.mvc.js"),
+    "Criar2FatoresPadrao": ("Common/Login", "Common.Login", "Portal.Common.Login.mvc.js"),
+    "GetServSol": ("Common/Login", "Common.Login", "Portal.Common.Login.mvc.js"),
+    "EnviarCodigo2Fatores": ("", "Common.Login", "Portal.controller.js"),
+    "GetResultados": ("UI_Pacientes/MeusPacientes", "UI_Pacientes.MeusPacientes", "Portal.UI_Pacientes.MeusPacientes.mvc.js"),
+    "GetLaudosPdf": ("UI_Pacientes/MeusPacientes", "UI_Pacientes.MeusPacientes", "Portal.UI_Pacientes.MeusPacientes.mvc.js"),
+}
+# Sigla do exame no Tasy (CD_EXAME) -> códigos aceitos no DB (CodigoProcedimento).
+# Editável: acrescente aqui ou em ~/.config/zion-cli/db_siglas.json  {"TASY": ["DB1", "DB2"]}.
+# Sem entrada, usa a própria sigla (TOXG -> TOXG).
+DB_SIGLAS = {
+    "TOXG": ["TOXG"],
+    "TOXM": ["TOXM"],
+}
+
+# Tasy: diálogo "Anexar arquivo" (828690) -> WDBPanel ResultLaboratorioWDBP (828695)
+TASY_ANEXO = {"table": "RESULT_LABORATORIO", "visao": 77110, "ativacao": 45563, "obj": 828695,
+              "campo": "DS_RESULTADO", "formato_pdf": 3}
+
+
+def db_creds_path():
+    return os.path.join(config_dir(), "db_credentials.json")
+
+
+def db_session_path():
+    return os.path.join(config_dir(), "db_session.json")
+
+
+def _write_private_json(path, data):
+    os.makedirs(config_dir(), mode=0o700, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _read_json(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _so_digitos(t):
+    return re.sub(r"\D", "", str(t or ""))
+
+
+def _cpf_mascarado(cpf):
+    c = _so_digitos(cpf)
+    return ("*" * max(0, len(c) - 2) + c[-2:]) if c else "(nenhum)"
+
+
+def _nome_norm(t):
+    t = unicodedata.normalize("NFD", str(t or "").upper())
+    t = "".join(ch for ch in t if not unicodedata.combining(ch))
+    return re.sub(r"[^A-Z ]+", " ", t).split()
+
+
+def nomes_batem(a, b):
+    """Mesmo paciente? Exige os mesmos tokens (ignora acento/caixa/ordem de espaços)."""
+    ta, tb = _nome_norm(a), _nome_norm(b)
+    return bool(ta) and ta == tb
+
+
+def db_siglas():
+    m = {k.upper(): [x.upper() for x in v] for k, v in DB_SIGLAS.items()}
+    extra = _read_json(os.path.join(config_dir(), "db_siglas.json"))
+    for k, v in extra.items():
+        m[str(k).upper()] = [str(x).upper() for x in (v if isinstance(v, list) else [v])]
+    return m
+
+
+class EDB:
+    """Cliente HTTP do portal E-DB (DB Diagnósticos), sem navegador."""
+
+    def __init__(self, verbose=False):
+        self.s = requests.Session()
+        self.s.headers.update({"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) zion-cli/1.0",
+                               "Accept": "application/json", "Content-Type": "application/json; charset=UTF-8"})
+        self.verbose = verbose
+        self.ncalls = 0
+        self._api = None
+        self._mv = None
+        self._logged = False
+        sess = _read_json(db_session_path())
+        for c in sess.get("cookies", []):
+            self.s.cookies.set(c["name"], c["value"], domain=c.get("domain"), path=c.get("path", "/"))
+
+    # ---------- infra OutSystems ----------
+    def _save_session(self):
+        _write_private_json(db_session_path(), {
+            "saved_at": int(time.time()),
+            "cookies": [{"name": c.name, "value": c.value, "domain": c.domain, "path": c.path} for c in self.s.cookies]})
+
+    def _csrf(self):
+        raw = self.s.cookies.get("nr2Users")
+        if raw:
+            from urllib.parse import unquote
+            m = re.search(r"crf=([^;]+)", unquote(raw))
+            if m:
+                return m.group(1)
+        return EDB_ANON_CSRF
+
+    def _module_version(self, force=False):
+        if self._mv and not force:
+            return self._mv
+        r = self.s.get(EDB_URL + "moduleservices/moduleversioninfo", timeout=30)
+        if r.status_code == 403:
+            sys.exit("Portal E-DB respondeu 403 (acesso negado) — provável bloqueio de rede. "
+                     "Rode o CLI de um computador do hospital ou com outra rede.")
+        r.raise_for_status()
+        self._mv = r.json()["versionToken"]
+        return self._mv
+
+    def _api_versions(self, force=False):
+        """Lê apiVersion de cada ação nos bundles JS do portal (cache por versão do módulo)."""
+        mv = self._module_version(force=force)
+        cache_p = os.path.join(config_dir(), "db_api_cache.json")
+        cache = _read_json(cache_p)
+        if not force and cache.get("moduleVersion") == mv and all(k in cache.get("api", {}) for k in EDB_ACTIONS):
+            self._api = cache["api"]
+            return self._api
+        info = self.s.get(EDB_URL + "moduleservices/moduleinfo", timeout=60).json()["manifest"]["urlVersions"]
+        base = EDB_URL.split("/Portal/")[0]
+        api = {}
+        for fname in sorted({v[2] for v in EDB_ACTIONS.values()}):
+            key = next((k for k in info if k.endswith("/" + fname)), None)
+            if not key:
+                continue
+            js = self.s.get(base + key + info[key], timeout=60).text
+            for m in re.finditer(r'callServerAction\("(\w+)", "(screenservices/[^"]+)", "([^"]+)"', js):
+                api.setdefault(m.group(1), {"url": m.group(2), "ver": m.group(3)})
+        falt = [k for k in EDB_ACTIONS if k not in api]
+        if falt:
+            raise RuntimeError(f"E-DB: não achei estas ações nos bundles do portal: {falt} (o portal mudou?)")
+        self._api = api
+        try:
+            _write_private_json(cache_p, {"moduleVersion": mv, "api": api})
+        except OSError:
+            pass
+        return api
+
+    def call(self, action, inputs, _retry=True):
+        api = self._api or self._api_versions()
+        a = api[action]
+        body = {"versionInfo": {"moduleVersion": self._module_version(), "apiVersion": a["ver"]},
+                "viewName": EDB_ACTIONS[action][1], "inputParameters": inputs}
+        self.ncalls += 1
+        r = self.s.post(EDB_URL + a["url"], json=body, headers={"X-CSRFToken": self._csrf()}, timeout=180)
+        if r.status_code == 403:
+            sys.exit("Portal E-DB respondeu 403 (acesso negado). Tente de outra rede.")
+        try:
+            d = r.json()
+        except Exception:
+            raise RuntimeError(f"E-DB {action}: HTTP {r.status_code} {r.text[:200]}")
+        vi = d.get("versionInfo") or {}
+        if _retry and (vi.get("hasApiVersionChanged") or vi.get("hasModuleVersionChanged")):
+            self._mv = None
+            self._api_versions(force=True)
+            return self.call(action, inputs, _retry=False)
+        if d.get("exception"):
+            ex = d["exception"]
+            msg = ex.get("message") or ex.get("name") or str(ex)
+            raise PermissionError(msg) if ("login" in msg.lower() or "role required" in msg.lower() or ex.get("name") in ("NotRegisteredException", "NotLoggedInException")) else RuntimeError(f"E-DB {action}: {msg}")
+        if r.status_code != 200:
+            raise RuntimeError(f"E-DB {action}: HTTP {r.status_code}")
+        self._save_session()
+        return d.get("data") or {}
+
+    # ---------- login ----------
+    def login(self, cpf=None, senha=None, serv_sol=None, otp="", salvar=True):
+        saved = _read_json(db_creds_path())
+        cpf = _so_digitos(cpf or os.environ.get("DB_CPF") or saved.get("cpf"))
+        senha = senha or os.environ.get("DB_PASSWORD") or saved.get("password")
+        serv_sol = _so_digitos(serv_sol or os.environ.get("DB_SERV_SOL") or saved.get("serv_sol") or EDB_SERV_SOL_PADRAO)
+        if not cpf or not senha:
+            sys.exit("Faltam CPF/senha do portal DB. Rode: python3 zion.py db-login --cpf CPF --password-stdin")
+        ss = "C" + serv_sol
+        self.s.cookies.clear()
+        self.s.get(EDB_URL + "Login", timeout=30)
+        v = self.call("ValidarServicoSolicitante", {"ServSol_Usuario": ss})
+        if not v.get("Has_ServSolicitante"):
+            sys.exit(f"Serviço solicitante {serv_sol} não aceito pelo portal DB.")
+        d = self.call("DoLogin", {"ServSol_Username": ss, "Username": cpf, "Password": senha,
+                                  "OTP": otp or "", "Device": "Chrome"})
+        if d.get("Precisa2Fatores") and not otp:
+            t = self.call("Criar2FatoresPadrao", {"Username": cpf, "ServSol_Username": ss})
+            try:
+                self.call("EnviarCodigo2Fatores", {"Username": cpf, "ServSol_Username": ss, "OTP": t.get("Token", "")})
+            except Exception as e:
+                log(f"(aviso: envio do código 2FA: {e})")
+            if salvar:
+                _write_private_json(db_creds_path(), {"cpf": cpf, "password": senha, "serv_sol": serv_sol})
+            sys.exit("O portal DB pediu verificação em 2 fatores e enviou um código. "
+                     "Rode de novo: python3 zion.py db-login --otp CODIGO")
+        if d.get("IsUsuarioBloqueado"):
+            sys.exit("Usuário do portal DB está BLOQUEADO. Desbloqueie pelo portal.")
+        if not d.get("HasAcesso"):
+            msg = (d.get("Mensagem") or "acesso negado").replace(senha, "***")
+            sys.exit(f"Login no portal DB falhou: {msg}")
+        self._logged = True
+        self._save_session()
+        if salvar:
+            _write_private_json(db_creds_path(), {"cpf": cpf, "password": senha, "serv_sol": serv_sol})
+        log(f"Login DB OK (CPF {_cpf_mascarado(cpf)}, serviço solicitante {serv_sol})")
+        return d
+
+    def _auth_call(self, action, inputs):
+        try:
+            return self.call(action, inputs)
+        except PermissionError:
+            self.login()
+            return self.call(action, inputs)
+
+    # ---------- dados ----------
+    def buscar(self, chave, de=None, ate=None):
+        """Meus Pacientes: pedidos (com exames) que casam com a chave (pedido, paciente ou atendimento)."""
+        di = de.strftime("%Y-%m-%d") if de else "1900-01-01"
+        df = (ate or dt.datetime.now(TZ)).strftime("%Y-%m-%d")
+        out, pag, tot = [], 1, 1
+        while pag <= tot and pag <= 20:
+            d = self._auth_call("GetResultados", {
+                "Chave": str(chave), "DataInicio": di, "DataFim": df, "SomenteNaoVisualizados": False,
+                "AtendimentoVIP": False, "AmostraNobre": False, "SomentePanico": False, "StatusPedidoId": 0,
+                "TipoDataBuscaId": 0, "NumeroDaPagina": str(pag), "TipoListaExame": "T", "BuscaDashboard": False,
+                "TextList": {"List": [], "EmptyListItem": ""}})
+            lst = d.get("RES_Pedido") or {}
+            out += lst.get("List", lst) if isinstance(lst, dict) else lst
+            tot = int(d.get("TotalPaginas") or 1)
+            pag += 1
+        return out
+
+    def pdf_exame(self, num_pedido, seq_proc):
+        """Baixa o laudo de UM exame (um SeqProcedimento). Retorna bytes do PDF."""
+        d = self._auth_call("GetLaudosPdf", {
+            "Input": {"Pedidos": {"List": [{"NumeroPedido": str(num_pedido),
+                                            "Procedimentos": {"List": [str(seq_proc)]}}]},
+                      "Cabecalho": ""},
+            "IsTokenValidado": False})
+        la = d.get("Laudo") or {}
+        info, suc = la.get("Info") or {}, la.get("Sucesso") or {}
+        if info.get("Exige2Fatores") and not info.get("TokenValidado"):
+            raise RuntimeError("exame com acesso restrito: o portal exige token 2FA para este laudo (baixe pelo portal)")
+        b64 = info.get("LaudosPDF") or ""
+        if not suc.get("Sucesso") or not b64:
+            raise RuntimeError(f"portal não devolveu o PDF: {suc.get('Mensagem') or 'sem laudo'}")
+        import base64
+        if "," in b64[:100] and b64.startswith("data:"):
+            b64 = b64.split(",", 1)[1]
+        data = base64.b64decode(b64)
+        if not data.startswith(b"%PDF"):
+            raise RuntimeError("o portal devolveu algo que não é PDF")
+        return data
+
+
+def _lst(x):
+    if isinstance(x, dict) and "List" in x:
+        return x["List"] or []
+    return x or []
+
+
+def pdf_texto(data):
+    import subprocess, tempfile
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as f:
+            f.write(data); f.flush()
+            p = subprocess.run(["pdftotext", "-layout", f.name, "-"], capture_output=True, timeout=60)
+            return p.stdout.decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def checar_pdf(data, paciente, nome_exame, outros_nomes):
+    """Confere: nome do paciente e só aquele exame. Retorna (ok, msgs)."""
+    txt = pdf_texto(data)
+    if not txt.strip():
+        return True, ["(aviso: não consegui ler o texto do PDF; conferido só pelo pedido/seq do portal)"]
+    msgs, ok = [], True
+    m = re.search(r"Paciente:\s*(.+?)(?:\s{2,}|$)", txt, re.M)
+    if m:
+        if nomes_batem(m.group(1), paciente):
+            msgs.append("paciente do PDF confere")
+        else:
+            ok = False
+            msgs.append("ERRO: paciente do PDF não confere com o Tasy")
+    else:
+        msgs.append("(aviso: não achei 'Paciente:' no PDF)")
+    tnorm = " ".join(_nome_norm(txt))
+    proprio = " ".join(_nome_norm(nome_exame))
+    for o in outros_nomes:
+        on = " ".join(_nome_norm(o))
+        if on and on not in proprio and on in tnorm:
+            ok = False
+            msgs.append(f"ERRO: o PDF parece conter outro exame do pedido ({o})")
+    return ok, msgs
+
+
+# ---------- Tasy: anexo de PDF no exame ----------
+def _tasy_dsreq(prescr, seq):
+    a = TASY_ANEXO
+    return {"tipo": "RequisicaoDataSource", "@class": "br.com.wheb.vo.componentes.metaData.RequisicaoDataSource",
+            "page": 1, "fieldActivators": {}, "selectFirstRecord": False, "legendDef": {}, "functionVariables": {},
+            "tableName": a["table"], "nrSeqVisao": a["visao"], "nrSeqAtivacao": a["ativacao"], "featureCode": 722,
+            "tableDescription": f"{a['table']}_722_{a['visao']}_dg", "schematicsObj": a["obj"], "tipoAtivacao": 3,
+            "paramsByName": {"_schematicObjCode": a["obj"], "NR_PRESCRICAO": int(prescr), "NR_SEQ_PRESCRICAO": int(seq)},
+            "inicioPagina": 1, "qtRegistrosPagina": -1, "qtMaxRegistros": 1, "unificarCountRegistros": True}
+
+
+def tasy_anexos(z, prescr, seq):
+    """Registros de anexo (RESULT_LABORATORIO) do exame — só leitura."""
+    d = z.post("DataSourceProvider/getDataSource", [_tasy_dsreq(prescr, seq)])
+    return ((d or {}).get("dados") or {}).get("linhasResultSet", [])
+
+
+def _anexo_nome(row):
+    v = str(row.get(TASY_ANEXO["campo"]) or "")
+    return v.split("?", 1)[1] if "?" in v else v.rsplit("/", 1)[-1]
+
+
+def tasy_upload(z, nome, data):
+    z.ensure()
+    z.ncalls += 1
+    h = dict(z.feat); h["Content-Type"] = None
+    r = z.s.post(API + "/files", files={"file": (nome, data, "application/pdf")}, headers=h, timeout=120)
+    if r.status_code in (401, 403):
+        if not z.refresh():
+            z.login()
+        r = z.s.post(API + "/files", files={"file": (nome, data, "application/pdf")}, headers=h, timeout=120)
+    if r.status_code != 200:
+        raise RuntimeError(f"upload no Tasy falhou: HTTP {r.status_code} {r.text[:200]}")
+    return r.json()[0]
+
+
+def tasy_apagar_upload(z, path):
+    try:
+        z.s.delete(API + "/files/deleteFile", params={"file": path}, headers=z.feat, timeout=30)
+    except Exception:
+        pass
+
+
+def tasy_inserir_anexo(z, prescr, seq, stored):
+    req = _tasy_dsreq(prescr, seq)
+    novo = z.post("WebNativeDataSource/performAction", [req, {"tipo": "dsActionParams", "valor": {"acao": "NEW_RECORD"}}])
+    reg = dict(((novo or {}).get("dados") or {}).get("registro") or {})
+    old = copy.deepcopy(reg)
+    reg.update({"NR_PRESCRICAO": int(prescr), "NR_SEQ_PRESCRICAO": int(seq), "NM_USUARIO": z.sess.get("nmUsuario") or USER,
+                "DT_ATUALIZACAO": instant_of(dt.datetime.now(TZ)), "IE_FORMATO_TEXTO": TASY_ANEXO["formato_pdf"],
+                "IE_COBRANCA": "N", TASY_ANEXO["campo"]: stored})
+    params = {"acao": "INSERT", "shouldClean": True, "isRecording": False, "registro": reg, "registroOld": old,
+              "camposLog": {}, "records": [],
+              "attachedFile": {TASY_ANEXO["campo"]: {"file": stored, "stored": stored,
+                                                     "attribute": TASY_ANEXO["campo"], "saveOnBase": False}}}
+    d = z.post("WebNativeDataSource/performAction", [req, {"tipo": "dsActionParams", "valor": params}])
+    dd = (d or {}).get("dados") or {}
+    if str(dd.get("messageType") or "").upper() == "ERROR":
+        raise RuntimeError(f"Tasy recusou o anexo: {dd.get('userMessage')}")
+    return dd
+
+
+def tasy_desfazer_anexo(z, prescr, seq):
+    """Equivale ao clique direito 'Desfazer exame PDF'."""
+    return z.post("CorLabF3/executeProcedure", [S("UNMAKE_EXAM_PDF"), H({
+        "NR_PRESCRICAO_P": int(prescr), "NR_SEQ_PRESCR_P": int(seq), "NM_USUARIO_P": z.sess.get("nmUsuario") or USER})])
+
+
+def _tasy_exames_30(z, atend, de=None, ate=None):
+    ini, fim = resolve_de_ate(de, ate, default_days=30)
+    data = collect(z, atend, phases=(30,), ini=ini, fim=fim)
+    ex = []
+    for a in data:
+        r = a["row"]
+        for e in a["exames"]:
+            ex.append({"prescr": r.get("NR_PRESCRICAO"), "seq": e.get("NR_SEQ_PRESCR"),
+                       "sigla": str(e.get("CD_EXAME") or "").upper(), "nome": (e.get("DS_PROCEDIMENTO") or "").strip(),
+                       "status": e.get("IE_STATUS_ATEND"), "paciente": r.get("NM_PESSOA_FISICA"),
+                       "dt": row_dt_prescr(r), "atend": r.get("NR_ATENDIMENTO") or atend})
+    return ex, (ini, fim)
+
+
+def db_casar(edb, tasy_ex, chave=None, pedido=None):
+    """Acha no portal os pedidos do paciente e casa cada exame do Tasy com o exame do DB."""
+    if not tasy_ex:
+        return [], [], None
+    paciente = tasy_ex[0]["paciente"]
+    chaves = [chave] if chave else []
+    if pedido:
+        chaves = [pedido]
+    if not chaves:
+        chaves = [str(tasy_ex[0]["atend"])] + sorted({str(e["prescr"]) for e in tasy_ex}) + [paciente]
+    pedidos, usada = [], None
+    for c in chaves:
+        res = [p for p in edb.buscar(c) if nomes_batem(p.get("NomePaciente"), paciente)]
+        if pedido:
+            res = [p for p in res if str(p.get("NumPedido")) == str(pedido)]
+        if res:
+            pedidos, usada = res, c
+            break
+    mapa = db_siglas()
+    pares = []
+    for e in tasy_ex:
+        aceitas = mapa.get(e["sigla"], [e["sigla"]])
+        cands = []
+        for p in pedidos:
+            for pr in _lst(p.get("Procedimentos")):
+                if str(pr.get("CodigoProcedimento") or "").upper() in aceitas:
+                    cands.append((p, pr))
+        if e["dt"] and len(cands) > 1:
+            lim = e["dt"] - dt.timedelta(days=1)
+            novos = [c for c in cands if str(c[0].get("DataHoraPedido") or "")[:10] >= lim.strftime("%Y-%m-%d")]
+            cands = novos or cands
+        pares.append((e, cands))
+    return pares, pedidos, usada
+
+
+def _fmt_db_dt(v):
+    s = str(v or "")
+    try:
+        d = dt.datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")
+        if s.endswith("Z"):
+            d = d.replace(tzinfo=dt.timezone.utc).astimezone(TZ)
+        return d.strftime("%d/%m/%Y %H:%M")
+    except ValueError:
+        return s
+
+
+def cmd_db_buscar(z, atend, chave=None, pedido=None, de=None, ate=None, as_json=False):
+    ex, (ini, fim) = _tasy_exames_30(z, atend, de, ate)
+    if not ex:
+        print(f"Atendimento {atend}: nenhum exame em Digitação do Resultado (30) entre "
+              f"{ini.strftime('%d/%m/%Y')} e {fim.strftime('%d/%m/%Y')}.")
+        return
+    edb = EDB()
+    pares, pedidos, usada = db_casar(edb, ex, chave, pedido)
+    out = {"atendimento": atend, "paciente_confere": bool(pedidos), "chave_usada": usada,
+           "pedidos_db": [{"pedido": p.get("NumPedido"), "atendimento_db": p.get("NumAtendimento"),
+                           "data": _fmt_db_dt(p.get("DataHoraPedido")), "status": p.get("StatusLabel"),
+                           "exames": [{"codigo": pr.get("CodigoProcedimento"), "nome": pr.get("NomeProcedimento"),
+                                       "status": pr.get("StatusLabel"), "seq": pr.get("SeqProcedimento"),
+                                       "pdf": pr.get("PermitidoBaixarLaudo")} for pr in _lst(p.get("Procedimentos"))]}
+                          for p in pedidos],
+           "tasy": []}
+    for e, cands in pares:
+        anexos = tasy_anexos(z, e["prescr"], e["seq"])
+        out["tasy"].append({"prescricao": e["prescr"], "seq": e["seq"], "sigla": e["sigla"], "status": e["status"],
+                            "anexos": [_anexo_nome(a) for a in anexos],
+                            "db": [{"pedido": p.get("NumPedido"), "codigo": pr.get("CodigoProcedimento"),
+                                    "status": pr.get("StatusLabel"), "pdf": pr.get("PermitidoBaixarLaudo")} for p, pr in cands]})
+    if as_json:
+        print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
+        return out
+    print("DB Diagnósticos × Tasy (só leitura; nada é anexado nem liberado)")
+    print(f"Atendimento {atend}: {ex[0]['paciente']}")
+    if not pedidos:
+        print("Nenhum pedido do DB com o MESMO nome de paciente. Tente --chave PEDIDO_DB ou --chave 'NOME'.")
+    for p in out["pedidos_db"]:
+        print(f"  DB pedido {p['pedido']} | atend. DB {p['atendimento_db']} | {p['data']} | {p['status']}")
+        for x in p["exames"]:
+            print(f"     - {x['codigo']}: {x['nome']} [{x['status']}]{'' if x['pdf'] else ' (sem PDF)'}")
+    print("Exames do Tasy em Digitação (30):")
+    for t in out["tasy"]:
+        db = ", ".join(f"{d['codigo']}@{d['pedido']} [{d['status']}]" for d in t["db"]) or "SEM correspondente no DB"
+        anx = f" | anexo: {', '.join(t['anexos'])}" if t["anexos"] else " | sem anexo"
+        print(f"  prescr {t['prescricao']} seq {t['seq']} {t['sigla']} → {db}{anx}")
+    return out
+
+
+def cmd_db_anexar(z, atend, exames=None, dry=False, substituir=False, chave=None, pedido=None,
+                  de=None, ate=None, salvar_pdf=None):
+    print("ANEXAR LAUDO DB → Tasy: um PDF por exame, sem liberar." + (" (dry-run: nada é gravado no Tasy)" if dry else ""))
+    ex, (ini, fim) = _tasy_exames_30(z, atend, de, ate)
+    if exames:
+        want = {s.upper() for s in exames}
+        ex = [e for e in ex if e["sigla"] in want]
+    if not ex:
+        sys.exit(f"Nenhum exame em Digitação (30) para anexar no atendimento {atend}"
+                 + (f" com {', '.join(exames)}" if exames else "") + ".")
+    edb = EDB()
+    pares, pedidos, usada = db_casar(edb, ex, chave, pedido)
+    if not pedidos:
+        sys.exit("Não achei no portal DB pedido com o MESMO nome do paciente do Tasy. "
+                 "Use --chave PEDIDO_DB (ou o nome) e confira com db-buscar.")
+    ok_n = err_n = 0
+    for e, cands in pares:
+        tag = f"prescr {e['prescr']} seq {e['seq']} {e['sigla']}"
+        # sorologia/exame externo: anexar o PDF é permitido (só a digitação de valores é bloqueada)
+        if e["status"] != 30:
+            print(f"  {tag}: PULADO, status {e['status']} (só anexo em Digitação 30)"); continue
+        if not cands:
+            print(f"  {tag}: SEM exame correspondente no DB — nada feito"); err_n += 1; continue
+        if len({(p.get('NumPedido'), pr.get('SeqProcedimento')) for p, pr in cands}) > 1:
+            print(f"  {tag}: AMBÍGUO no DB ({', '.join(str(p.get('NumPedido')) for p, _ in cands)}); use --pedido"); err_n += 1; continue
+        p, pr = cands[0]
+        if not pr.get("PermitidoBaixarLaudo"):
+            print(f"  {tag}: DB {pr.get('CodigoProcedimento')} ainda sem laudo ({pr.get('StatusLabel')}) — nada feito"); err_n += 1; continue
+        anexos = tasy_anexos(z, e["prescr"], e["seq"])
+        if anexos and not substituir:
+            print(f"  {tag}: já tem anexo ({', '.join(_anexo_nome(a) for a in anexos)}); use --substituir para trocar"); continue
+        try:
+            data = edb.pdf_exame(p.get("NumPedido"), pr.get("SeqProcedimento"))
+        except Exception as x:
+            print(f"  {tag}: falha ao baixar PDF do DB: {x}"); err_n += 1; continue
+        outros = [o.get("NomeProcedimento") for o in _lst(p.get("Procedimentos")) if o.get("SeqProcedimento") != pr.get("SeqProcedimento")]
+        ok, msgs = checar_pdf(data, e["paciente"], pr.get("NomeProcedimento"), outros)
+        nome_arq = f"{e['sigla']}_DB{p.get('NumPedido')}.pdf"
+        if salvar_pdf:
+            os.makedirs(salvar_pdf, exist_ok=True)
+            with open(os.path.join(salvar_pdf, nome_arq), "wb") as f:
+                f.write(data)
+        print(f"  {tag} ← DB pedido {p.get('NumPedido')} {pr.get('CodigoProcedimento')} ({len(data)//1024} KB): {'; '.join(msgs)}")
+        if not ok:
+            print("     NÃO anexado (conferência do PDF falhou)."); err_n += 1; continue
+        if dry:
+            acao = "desfazer anexo atual + " if anexos else ""
+            print(f"     dry-run: {acao}upload {nome_arq} → RESULT_LABORATORIO (IE_FORMATO_TEXTO=3) do seq {e['seq']}")
+            ok_n += 1; continue
+        stored = None
+        try:
+            if anexos:
+                tasy_desfazer_anexo(z, e["prescr"], e["seq"])
+                if tasy_anexos(z, e["prescr"], e["seq"]):
+                    raise RuntimeError("não consegui remover o anexo anterior")
+            stored = tasy_upload(z, nome_arq, data)
+            tasy_inserir_anexo(z, e["prescr"], e["seq"], stored)
+        except Exception as x:
+            if stored:
+                tasy_apagar_upload(z, stored)
+            print(f"     ERRO ao anexar: {x}"); err_n += 1; continue
+        # releitura: exatamente 1 anexo, com este arquivo, e exame ainda em 30
+        rb = tasy_anexos(z, e["prescr"], e["seq"])
+        st = next((x["status"] for x in _tasy_exames_30(z, atend, de, ate)[0]
+                   if x["prescr"] == e["prescr"] and x["seq"] == e["seq"]), None)
+        bom = len(rb) == 1 and nome_arq in str(rb[0].get(TASY_ANEXO["campo"]) or "")
+        quando = (rb[0].get("DT_ATUALIZACAO") or {}).get("value") if rb else None
+        hh = instant_to_local(quando).strftime("%H:%M") if quando and instant_to_local(quando) else "?"
+        print(f"     {'OK' if bom else 'ATENÇÃO'}: {len(rb)} anexo(s) no exame ({', '.join(_anexo_nome(a) for a in rb)}) "
+              f"às {hh} (horário de Brasília); status {st} (não liberado)")
+        ok_n += bom; err_n += (not bom)
+    print(f"\nResumo: {ok_n} exame(s) {'prontos (dry-run)' if dry else 'anexados'}, {err_n} com problema. Nada foi liberado.")
+
+
+def cmd_db_login(cpf=None, password_stdin=False, serv_sol=None, otp=None):
+    saved = _read_json(db_creds_path())
+    senha = None
+    if password_stdin:
+        senha = sys.stdin.read().rstrip("\r\n")
+        if not senha:
+            sys.exit("Senha vazia no stdin.")
+    cpf = cpf or os.environ.get("DB_CPF") or saved.get("cpf")
+    if not cpf and _is_tty():
+        cpf = input("CPF do portal DB: ").strip()
+    if not senha and not os.environ.get("DB_PASSWORD") and not (otp and saved.get("password")):
+        if _is_tty():
+            senha = getpass.getpass("Senha do portal DB: ")
+        elif not saved.get("password"):
+            sys.exit("Sem senha: use --password-stdin ou DB_PASSWORD.")
+    EDB().login(cpf=cpf, senha=senha, serv_sol=serv_sol, otp=otp or "", salvar=True)
+    print(f"Credenciais do portal DB salvas em {db_creds_path()} (permissão 600).")
+
+
 def main():
     ap = argparse.ArgumentParser(prog="zion.py")
     ap.add_argument("--user", dest="cli_user", default=None,
@@ -2867,8 +3448,47 @@ def main():
     cf.add_argument("--ate", help="fim DT_PRESCRICAO DD/MM/AAAA[ HH:MM] (padrão: agora)")
     cf.add_argument("--at", dest="atendimento", type=int, help="filtra um atendimento")
     cf.add_argument("--json", dest="as_json", action="store_true", help="saída JSON")
+    dl = sp.add_parser("db-login", help="valida e grava o acesso do portal DB Diagnósticos (E-DB), permissão 600")
+    dl.add_argument("--cpf", help="CPF do usuário do portal DB (ou DB_CPF)")
+    dl.add_argument("--password-stdin", action="store_true", help="lê a senha do stdin (ou DB_PASSWORD)")
+    dl.add_argument("--serv-sol", help=f"serviço solicitante (padrão {EDB_SERV_SOL_PADRAO})")
+    dl.add_argument("--otp", help="código de 2 fatores, se o portal pedir")
+    sp.add_parser("db-logout", help="apaga acesso e sessão do portal DB")
+    sp.add_parser("db-whoami", help="mostra CPF mascarado e serviço solicitante salvos")
+    for nm, hp in (("db-buscar", "só leitura: pedido DB × exames do Tasy em Digitação"),
+                   ("db-anexar", "baixa o laudo de CADA exame no DB e anexa no exame certo do Tasy (sem liberar)")):
+        x = sp.add_parser(nm, help=hp)
+        x.add_argument("atendimento", type=int)
+        x.add_argument("--chave", help="busca no DB por esta chave (pedido, nome ou atendimento)")
+        x.add_argument("--pedido", help="força o número do pedido DB")
+        x.add_argument("--de", help="início DT_PRESCRICAO no Tasy (padrão: há 30 dias)")
+        x.add_argument("--ate", help="fim DT_PRESCRICAO no Tasy")
+        if nm == "db-buscar":
+            x.add_argument("--json", dest="as_json", action="store_true")
+        else:
+            x.add_argument("--exame", action="append", help="sigla do Tasy (repita): TOXG, TOXM…; padrão: todos em 30")
+            x.add_argument("--dry-run", action="store_true", help="baixa e confere os PDFs, mas não grava no Tasy")
+            x.add_argument("--substituir", action="store_true", help="troca o anexo existente (Desfazer exame PDF + novo)")
+            x.add_argument("--salvar-pdf", help="guarda uma cópia dos PDFs nesta pasta")
     a = ap.parse_args()
     t0 = time.time()
+
+    if a.cmd == "db-login":
+        cmd_db_login(a.cpf, a.password_stdin, a.serv_sol, a.otp)
+        return
+    if a.cmd == "db-logout":
+        for p in (db_creds_path(), db_session_path()):
+            if os.path.exists(p):
+                os.remove(p)
+        print("Acesso e sessão do portal DB removidos.")
+        return
+    if a.cmd == "db-whoami":
+        c = _read_json(db_creds_path())
+        if not c.get("cpf"):
+            print("Nenhum acesso DB salvo. Rode: python3 zion.py db-login --cpf CPF --password-stdin")
+            raise SystemExit(1)
+        print(f"CPF {_cpf_mascarado(c.get('cpf'))} | serviço solicitante {c.get('serv_sol') or EDB_SERV_SOL_PADRAO}")
+        return
 
     if a.cmd == "logout":
         path = creds_path()
@@ -2922,6 +3542,10 @@ def main():
         cmd_hemo(z, a.atendimento, a, a.dry_run, a.forcar, a.dump_payload)
     elif a.cmd == "conferir":
         cmd_conferir(z, a.de, a.ate, a.atendimento, a.as_json)
+    elif a.cmd == "db-buscar":
+        cmd_db_buscar(z, a.atendimento, a.chave, a.pedido, a.de, a.ate, a.as_json)
+    elif a.cmd == "db-anexar":
+        cmd_db_anexar(z, a.atendimento, a.exame, a.dry_run, a.substituir, a.chave, a.pedido, a.de, a.ate, a.salvar_pdf)
     else:
         cmd_gaso(z, a.atendimento, a, a.dry_run, a.forcar, a.dump_payload)
     log(f"[{time.time() - t0:.1f}s, {z.ncalls} chamadas de serviço]")
