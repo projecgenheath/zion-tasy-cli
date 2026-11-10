@@ -260,7 +260,7 @@ Cada exame do Tasy recebe **só o PDF dele**:
 ### Opções úteis
 - **Vínculo com o pedido DB.** O CLI procura o pedido pelo número do atendimento, pelas prescrições e pelo nome do paciente, e só aceita o nome **idêntico**. Se a busca falhar, use `--chave X` ou `--pedido N`.
 - **Período.** A busca de exames no Tasy cobre, por padrão, os últimos 30 dias. Use `--de` e `--ate` para mudar.
-- **Siglas DB → Tasy.** A tabela padrão é `DB_SIGLAS` em `zion.py` (`TOXG→TOXG`, `TOXM→TOXM`). Para acrescentar siglas sem mexer no código, crie `~/.config/zion-cli/db_siglas.json`, por exemplo `{"HBSAG": ["HBSAG"], "CMVG": ["CMVG"]}`.
+- **Siglas DB → Tasy.** A tabela padrão é `DB_SIGLAS` em `zion.py` (`TOXG→TOXG`, `TOXM→TOXM`, `PTUR→PTU24`; a chave é a sigla do Tasy e a lista traz as siglas do DB). Para acrescentar siglas sem mexer no código, crie `~/.config/zion-cli/db_siglas.json`, por exemplo `{"HBSAG": ["HBSAG"], "CMVG": ["CMVG"]}`.
 - **Pré-requisito.** O exame precisa estar em **Digitação (30)**. O Tasy só permite anexar com status < 35.
 
 ## Segurança

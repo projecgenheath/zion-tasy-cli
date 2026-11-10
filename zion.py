@@ -2847,6 +2847,7 @@ EDB_ACTIONS = {
 DB_SIGLAS = {
     "TOXG": ["TOXG"],
     "TOXM": ["TOXM"],
+    "PTUR": ["PTU24"],  # Proteína urinária 24 horas
 }
 
 # Tasy: diálogo "Anexar arquivo" (828690) -> WDBPanel ResultLaboratorioWDBP (828695)
@@ -3180,16 +3181,34 @@ def tasy_apagar_upload(z, path):
         pass
 
 
-def tasy_inserir_anexo(z, prescr, seq, stored):
+def _tasy_dsreq_painel(z, prescr, seq):
+    """Requisição como o WDBPanel do diálogo monta depois de carregar o metadata (MetaDataProvider/
+    obterWDBPanelMetaData): o navegador acrescenta allAttributes/ieLibera, que o INSERT usa."""
     req = _tasy_dsreq(prescr, seq)
+    m = z.post("MetaDataProvider/obterWDBPanelMetaData", [req]) or {}
+    md = m.get("dados") or {}
+    if md.get("allAttributes"):
+        req["allAttributes"] = md["allAttributes"]
+    req["ieLibera"] = bool(md.get("ieLibera"))
+    for k, v in (md.get("paramsByName") or {}).items():
+        req["paramsByName"].setdefault(k, v)
+    return req
+
+
+def tasy_inserir_anexo(z, prescr, seq, stored):
+    req = _tasy_dsreq_painel(z, prescr, seq)
     novo = z.post("WebNativeDataSource/performAction", [req, {"tipo": "dsActionParams", "valor": {"acao": "NEW_RECORD"}}])
     reg = dict(((novo or {}).get("dados") or {}).get("registro") or {})
-    old = copy.deepcopy(reg)
+    # Igual ao onBeforePerform do diálogo 828695 (CorLabF3.js). Lá DT_ATUALIZACAO recebe a *função*
+    # getServerDate (não o valor), que o JSON descarta: o navegador NÃO envia DT_ATUALIZACAO e o
+    # servidor preenche (sysdate). Fazemos igual.
+    reg.pop("DT_ATUALIZACAO", None)
     reg.update({"NR_PRESCRICAO": int(prescr), "NR_SEQ_PRESCRICAO": int(seq), "NM_USUARIO": z.sess.get("nmUsuario") or USER,
-                "DT_ATUALIZACAO": instant_of(dt.datetime.now(TZ)), "IE_FORMATO_TEXTO": TASY_ANEXO["formato_pdf"],
-                "IE_COBRANCA": "N", TASY_ANEXO["campo"]: stored})
-    params = {"acao": "INSERT", "shouldClean": True, "isRecording": False, "registro": reg, "registroOld": old,
-              "camposLog": {}, "records": [],
+                "IE_FORMATO_TEXTO": TASY_ANEXO["formato_pdf"], "IE_COBRANCA": "N", TASY_ANEXO["campo"]: stored})
+    # registroOld VAZIO: o detalhe do navegador manda {} num registro novo. Mandar o registro do
+    # NEW_RECORD como registroOld (+ records/camposLog) fazia o servidor falhar com
+    # "internal SQL database error" (HTTP 500) — causa do erro no primeiro teste real.
+    params = {"acao": "INSERT", "shouldClean": True, "isRecording": False, "registro": reg, "registroOld": {},
               "attachedFile": {TASY_ANEXO["campo"]: {"file": stored, "stored": stored,
                                                      "attribute": TASY_ANEXO["campo"], "saveOnBase": False}}}
     d = z.post("WebNativeDataSource/performAction", [req, {"tipo": "dsActionParams", "valor": params}])
