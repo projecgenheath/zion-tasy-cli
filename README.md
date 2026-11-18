@@ -186,7 +186,7 @@ python3 zion.py resultado 123456 --exame UREA=30 --exame CREA=0.43 --exame TGO=5
   --exame TGP=59.2 --exame BILI.total=0.73 --exame BILI.direta=0.21 --exame PCRP=14.3 --dry-run
 ```
 
-### `gaso AT [--ph --pco2 --po2 --hco3 --be --so2 --hb --hct --na --k --ica --cl --glu --lac --bil] [--obs TEXTO] [--dry-run] [--forcar] [--com-historico]`
+### `gaso AT [--ph --pco2 --po2 --hco3 --be --so2 --hb --hct --na --k --ica --cl --glu --lac --bil] [--obs TEXTO] [--dry-run] [--forcar] [--hgb-hct-max] [--com-historico]`
 Digita e salva a **gasometria** (venosa/arterial: GASV, GASA, GASO...) e, junto, a **bioquímica equivalente** que existir na prescrição, sem histórico/PEP (mesmas flags `--com-historico` / `--sem-historico` do `resultado`):
 
 | Opção | Bioquímica equivalente |
@@ -204,10 +204,12 @@ python3 zion.py gaso 123456 --ph 7.458 --pco2 36.9 --po2 52.4 --hco3 26.4 --be 2
   --na 136.1 --k 5.13 --ica 1.14 --cl 97.2 --glu 171 --lac 2.5 --dry-run
 ```
 
-### `hemo AT --rbc --hgb --hct --vcm --hcm --chcm --rdw --wbc --neu --lym --mon --eos --bas --plt --vpm [--dry-run] [--forcar] [--com-historico]`
+### `hemo AT --rbc --hgb --hct --vcm --hcm --chcm --rdw --wbc --neu --lym --mon --eos --bas --plt --vpm [--dry-run] [--forcar] [--hgb-hct-max] [--com-historico]`
 Digita e salva o **Hemograma Completo** com os valores **exatamente como no impresso do analisador**, sem histórico/PEP (mesmas flags `--com-historico` / `--sem-historico` do `resultado`):
 
-**Regra obrigatória do hemograma (automática no `hemo`):** Eosinófilos ≥ 1% sempre; se Leucócitos Totais > 10.000, também Bastonetes ≥ 1%. Os pontos acrescentados saem do maior percentual (normalmente segmentados) e o Total porcentagem Leucograma fica em 100. O CLI imprime o ajuste feito.
+**Regra obrigatória do hemograma (automática no `hemo`):** Eosinófilos ≥ 1% sempre; se Leucócitos Totais > 10.000, também Bastonetes ≥ 1%. Os pontos acrescentados saem do maior percentual (normalmente segmentados) e o Total porcentagem Leucograma fica em 100. O CLI imprime o ajuste feito. Esta regra **não muda**.
+
+**HGB/HCT quando o mesmo atendimento tem hemograma e gasometria:** lançar o **maior** valor entre a tira do HC e a da gasometria, e o **mesmo número nos dois exames**. `lote digitar` unifica sozinho (max de `hgb`/`hb` e de `hct`/`ht`) antes de salvar. Nos comandos avulsos `hemo` e `gaso`, se o outro exame já estiver salvo e o valor divergir, o CLI avisa qual é o maior. `--hgb-hct-max` relê o outro exame e grava o maior nos dois; para corrigir um exame já salvo, só regrava se ele estiver em status 30, **nunca** se estiver liberado.
 
 - `--wbc` em 10³/µL (ex.: 14.06). Leucócitos Totais = WBC × 1000; os absolutos o sistema calcula.
 - `--plt` em 10⁹/L (ex.: 174). O servidor multiplica por 1000 (→ 174.000).
@@ -259,10 +261,12 @@ python3 zion.py conferir --at 100001 100002              # leitura: liberados (s
 ```
 ```bash
 python3 zion.py lote digitacao lote.json [--dry-run]   # 1) todos em Digitação
-python3 zion.py lote digitar   lote.json [--dry-run]   # 2) só salva, sem histórico/PEP (resultado → hemo → gaso por atendimento)
+python3 zion.py lote digitar   lote.json [--dry-run]   # 2) só salva, sem histórico/PEP (resultado → hemo → gaso; HGB/HCT = maior das duas tiras se houver hemo e gaso)
 python3 zion.py lote conferir  lote.json               # 3) só leitura: classifica cada exame
 python3 zion.py lote liberar   lote.json [--dry-run]   # 4) libera só os liberáveis, UM exame por vez
 ```
+Se o atendimento tiver `hemo` e `gaso` no arquivo, `lote digitar` calcula o maior HGB/HB e o maior HCT das duas tiras e lança o mesmo valor nos dois exames, antes de salvar. A regra mínima de eosinófilos do `hemo` não muda.
+
 `"pep_ok"` é obrigatório em `PEP_A_CONFIRMAR`: testes rápidos e tipagens **sem** resultado anterior igual (inclusive NÃO REAGENTE/Negativo) e exames sem referência determinável com trecho no PEP. Ao pôr a sigla em `"pep_ok"`, a IA atesta que leu o trecho do PEP e que ele confirma o resultado. Hemograma, gasometria e bioquímica dentro da referência liberam sem `"pep_ok"`.
 
 Classes da etapa 3 (gravadas em `lote.json.conferencia.json`, permissão 600, **tem dado de paciente: nunca commitar**):

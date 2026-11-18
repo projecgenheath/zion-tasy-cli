@@ -11,8 +11,11 @@ Uso:
   # Hora da solicitação = campo DT_PRESCRICAO (dd/mm/aaaa HH:MM, America/Sao_Paulo)
   python3 zion.py ler ATENDIMENTO              # valores salvos dos exames em Digitação
   python3 zion.py resultado AT --exame NA+=134.9 [--exame ...] [--dry-run] [--forcar] [--com-historico]
-  python3 zion.py gaso AT --na 134.9 --k 4.37 --ica 1.08 --cl 105.7 [--glu --lac --ph ...] [--dry-run] [--forcar]
+  python3 zion.py gaso AT --na 134.9 --k 4.37 --ica 1.08 --cl 105.7 [--glu --lac --ph ...] [--dry-run] [--forcar] [--hgb-hct-max]
   (nunca libera; após salvar relê via build e compara os campos gravados)
+  (se o atendimento tiver HC e gaso, HGB/HCT = maior valor das duas tiras, igual nos dois;
+   lote digitar unifica sozinho; hemo/gaso avulsos avisam se o outro já estiver salvo;
+   --hgb-hct-max relê o outro e grava o maior nos dois, só status 30, nunca liberado)
   python3 zion.py historico AT [--exame CREA] [--dias 90] [--notas 1] [--json]   # só leitura; etapa 3
   (resultado/hemo/gaso NÃO comparam com o histórico após salvar; --com-historico liga.
    --sem-historico é aceito e não faz nada. Conferência: historico / lote conferir)
@@ -2007,7 +2010,7 @@ def gaso_payload(vo, env):
     return novo
 
 
-def gaso_lancar(t, it, vals, obs, dry, forcar, dump=None):
+def gaso_lancar(t, it, vals, obs, dry, forcar, dump=None, forcar_hgb_hct=False):
     seq, nse = it["NR_SEQ_PRESCR"], it["NR_SEQ_EXAME"]
     tag = f"{it['CD_EXAME']} (prescr {t.nr} seq {seq})"
     if exame_externo_bloqueado(it):
@@ -2031,6 +2034,13 @@ def gaso_lancar(t, it, vals, obs, dry, forcar, dump=None):
     def alvo(sq): v = env[sq]; return v if isinstance(v, str) else v[0]
     conf = [(nomes[sq], gaso_num(sub_val(subs[sq])), alvo(sq)) for sq in env
             if gaso_num(sub_val(subs[sq])) not in (None, 0) and vdiff(gaso_num(sub_val(subs[sq])), alvo(sq))]
+    if conf and forcar_hgb_hct and not forcar:
+        sl_h = set(GASO_SLUGS["hb"] + GASO_SLUGS["hct"])
+        conf_outros = [(n, o, f) for n, o, f in conf if _slug(n) not in sl_h]
+        if not conf_outros:
+            conf = []
+        else:
+            conf = conf_outros
     if conf and not forcar:
         print(f"  {tag}: já tem valor diferente salvo ({'; '.join(f'{n}: {vtxt(o)} ≠ {vtxt(f)}' for n, o, f in conf)}) - não sobrescrevi (use --forcar)")
         return
@@ -2061,10 +2071,23 @@ def cmd_gaso(z, atend, a, dry, forcar, dump=None):
     data, prs = prescricoes(z, atend)
     telas = [t for t in (Resultado(z, atend, nr, write=not dry).abrir() for nr in prs) if t.items]
     gasos = [(t, it) for t in telas for it in t.items if str(it.get("CD_EXAME", "")).upper().startswith(GASO_SIGLAS) or "GASOM" in str(it.get("NM_EXAME", "")).upper()]
+    aplicar = bool(getattr(a, "hgb_hct_max", False))
+    atual = {}
+    if "hb" in vals:
+        try: atual["hgb"] = parse_val(vals["hb"])[0]
+        except ValueError: pass
+    if "hct" in vals:
+        try: atual["hct"] = parse_val(vals["hct"])[0]
+        except ValueError: pass
+    if atual:
+        mh, mc = aplicar_hgb_hct_entre_exames(z, atend, telas, atual, "gaso", aplicar=aplicar, dry=dry)
+        if aplicar:
+            if mh is not None: vals["hb"] = num_txt(mh)
+            if mc is not None: vals["hct"] = num_txt(mc)
     if gasos:
         for t, it in gasos:
             print(f"Gasometria: {it['CD_EXAME']} {it['NM_EXAME'].strip()} (prescr {t.nr} seq {it['NR_SEQ_PRESCR']})")
-            gaso_lancar(t, it, vals, a.obs, dry, forcar, dump)
+            gaso_lancar(t, it, vals, a.obs, dry, forcar, dump, forcar_hgb_hct=aplicar)
     else:
         print("Gasometria: nenhuma em Digitação neste atendimento.")
     siglas = {it["CD_EXAME"].upper() for t in telas for it in t.items}
@@ -2185,6 +2208,12 @@ def cmd_hemo(z, atend, a, dry, forcar, dump=None):
     data, telas = abrir_telas(z, atend, write=not dry)
     hit = [(t, it) for t in telas for it in t.items if str(it.get("CD_EXAME", "")).upper() == HEMO_SIGLA]
     if not hit: print("Hemograma Completo: não está em Digitação neste atendimento."); return
+    aplicar = bool(getattr(a, "hgb_hct_max", False))
+    atual = {"hgb": env[1473], "hct": env[1472]}
+    mh, mc = aplicar_hgb_hct_entre_exames(z, atend, telas, atual, "hemo", aplicar=aplicar, dry=dry)
+    if aplicar:
+        if mh is not None: env[1473] = mh; esp[1473] = mh
+        if mc is not None: env[1472] = mc; esp[1472] = mc
     for t, it in hit:
         seq, nse = it["NR_SEQ_PRESCR"], it["NR_SEQ_EXAME"]
         tag = f"HC (prescr {t.nr} seq {seq})"
@@ -2197,6 +2226,8 @@ def cmd_hemo(z, atend, a, dry, forcar, dump=None):
         falta = [s for s in env if s not in lid]
         if falta: print(f"  {tag}: campos ausentes na tela {falta} - abortado"); continue
         dif = [(s, lid[s], esp[s]) for s in esp if lid[s] not in (None, 0) and abs(lid[s] - esp[s]) > 1e-9]
+        if dif and getattr(a, "hgb_hct_max", False) and not forcar:
+            dif = [(s, o, n) for s, o, n in dif if s not in (1473, 1472)]
         if dif and not forcar:
             print(f"  {tag}: já tem valores diferentes salvos - não sobrescrevi (use --forcar):")
             for s, o, n in dif: print(f"     {nomes[s]}: salvo {num_txt(o)} -> novo {num_txt(n)}")
@@ -2219,6 +2250,252 @@ def cmd_hemo(z, atend, a, dry, forcar, dump=None):
         print(f"  {tag}: salvo (status {b['ResultVO'].get('ieStatusAtend')}); releitura " +
               ("ok em todos os campos" if not erros else "DIVERGÊNCIA: " + "; ".join(f"{nomes[s]} lido {o} esperado {n}" for s, o, n in erros)))
         if avisos: print("     avisos de referência: " + "; ".join(avisos))
+
+
+# ---------- HGB/HCT: maior valor entre hemograma e gasometria ----------
+# Quando o mesmo atendimento tem HC e gasometria, HGB/HB e HCT são lançados
+# com o maior valor das duas tiras, igual nos dois exames. Não mexe na regra
+# mínima de eosinófilos. Exame liberado (status 40) nunca é regravado.
+
+def _eh_item_hemo(it):
+    return str(it.get("CD_EXAME", "")).upper() == HEMO_SIGLA
+
+
+def _eh_item_gaso(it):
+    return str(it.get("CD_EXAME", "")).upper().startswith(GASO_SIGLAS) or "GASOM" in str(it.get("NM_EXAME", "")).upper()
+
+
+def _pares_exame(telas, pred):
+    return [(t, it) for t in (telas or []) for it in t.items if pred(it)]
+
+
+def _vo_exame(t, it):
+    seq = it["NR_SEQ_PRESCR"]
+    if seq not in t.nodes:
+        return None
+    return t.clicar(seq, it.get("NR_SEQ_EXAME"))["ResultVO"]
+
+
+def ler_hgb_hct_do_hemo(vo):
+    """HGB/HCT salvos no Hemograma Completo. 0 ou vazio = ainda não digitado."""
+    lid = hemo_lidos(vo or {"subExams": []})
+    def limpo(v):
+        return None if v in (None, 0) else float(v)
+    return {"hgb": limpo(lid.get(1473)), "hct": limpo(lid.get(1472))}
+
+
+def ler_hgb_hct_do_gaso(vo):
+    """HGB/HCT salvos na gasometria (campos HB/HGB e Hct/HT)."""
+    out = {"hgb": None, "hct": None}
+    if not vo:
+        return out
+    for opt, dest in (("hb", "hgb"), ("hct", "hct")):
+        x = gaso_sub(vo, opt)
+        if not x:
+            continue
+        v = gaso_num(sub_val(x))
+        if v not in (None, 0) and isinstance(v, (int, float)):
+            out[dest] = float(v)
+    return out
+
+
+def hgb_hct_max_lote(hemo, gaso):
+    """Unifica HGB/HB e HCT no maior valor das duas tiras (dicts de strings do arquivo de lote).
+    Devolve (hemo, gaso, mensagens) com cópias; não altera os dicts originais.
+    Só ajusta um campo se os dois lados tiverem valor numérico."""
+    hemo, gaso = dict(hemo or {}), dict(gaso or {})
+    msgs = []
+
+    def pega(d, *ks):
+        for k in ks:
+            if k in d and d[k] not in (None, ""):
+                try:
+                    f, _dec, _t = parse_val(d[k])
+                    return k, f, str(d[k])
+                except (ValueError, TypeError):
+                    return k, None, str(d[k])
+        return None, None, None
+
+    def aplica(nome, hemo_keys, gaso_keys):
+        hk, hv, hr = pega(hemo, *hemo_keys)
+        gk, gv, gr = pega(gaso, *gaso_keys)
+        if hv is None or gv is None:
+            return
+        mx = max(hv, gv)
+        txt = hr if abs(hv - mx) <= 1e-9 else gr
+        if hk:
+            hemo[hk] = txt
+        if gk:
+            gaso[gk] = txt
+        if abs(hv - mx) > 1e-9 or abs(gv - mx) > 1e-9:
+            msgs.append(f"{nome}: hemo {hr} × gaso {gr} → {txt} nos dois")
+
+    aplica("HGB/HB", ("hgb", "hb"), ("hb", "hgb"))
+    aplica("HCT", ("hct", "ht"), ("hct", "ht"))
+    return hemo, gaso, msgs
+
+
+def _achar_exames_liberados(z, atend, telas, pred):
+    """Se o outro exame não está nas telas já abertas (status 30), procura nos liberados (40), só leitura."""
+    if _pares_exame(telas, pred):
+        return []
+    try:
+        data = collect(z, atend, phases=(LIBERADO_STATUS,))
+    except Exception:
+        return []
+    prs = []
+    for a in data:
+        if any(pred(it) for it in a.get("exames") or []):
+            nr = a["row"]["NR_PRESCRICAO"]
+            if nr not in prs:
+                prs.append(nr)
+    extra = []
+    for nr in prs:
+        try:
+            t = Resultado(z, atend, nr, write=False).abrir()
+        except Exception:
+            continue
+        extra.extend((t, it) for it in t.items if pred(it))
+    return extra
+
+
+def hemo_atualizar_hgb_hct(t, it, hgb, hct, dry):
+    """Regrava só HGB e HCT de um HC em Digitação (status 30). Não mexe no resto nem na regra de eos."""
+    seq, nse = it["NR_SEQ_PRESCR"], it["NR_SEQ_EXAME"]
+    tag = f"HC (prescr {t.nr} seq {seq})"
+    if it.get("IE_STATUS_ATEND") != 30 or seq not in t.nodes:
+        print(f"  {tag}: status {it.get('IE_STATUS_ATEND')} — não regravo HGB/HCT (só status 30, nunca liberado)")
+        return
+    vo = t.clicar(seq, nse)["ResultVO"]
+    lid = hemo_lidos(vo)
+    env, nomes = {}, hemo_nomes()
+    if hgb is not None:
+        env[1473] = hgb
+    if hct is not None:
+        env[1472] = hct
+    if not env:
+        return
+    for s, v in list(env.items()):
+        print(f"     {nomes.get(s, s):<20} {('-' if lid.get(s) in (None, 0) else num_txt(lid[s])):>10} -> envia {num_txt(v)}")
+    if dry:
+        print(f"  [dry-run] {tag}: HGB/HCT do hemograma não gravados")
+        return
+    novo = hemo_payload(vo, env)
+    r, cons, b = t.salvar(novo, seq, nse)
+    if not (r or {}).get("saved"):
+        print(f"  {tag}: save retornou saved={r and r.get('saved')} - VERIFICAR")
+        return
+    if (cons or {}).get("DS_CONSISTENCIA_P"):
+        print(f"  {tag}: consistência: {cons['DS_CONSISTENCIA_P']}")
+    rl = hemo_lidos(b["ResultVO"])
+    erros = [(s, rl.get(s), v) for s, v in env.items() if rl.get(s) is None or abs(rl[s] - v) > 1e-9]
+    print(f"  {tag}: HGB/HCT atualizados (status {b['ResultVO'].get('ieStatusAtend')}); releitura " +
+          ("ok" if not erros else "DIVERGÊNCIA: " + "; ".join(f"{nomes[s]} lido {o} esperado {n}" for s, o, n in erros)))
+
+
+def aplicar_hgb_hct_entre_exames(z, atend, telas, atual, origem, aplicar=False, dry=False):
+    """Compara HGB/HCT do lançamento atual com o outro exame já salvo no atendimento.
+    atual: {'hgb': float|None, 'hct': float|None}; origem: 'hemo' ou 'gaso'.
+    Sempre avisa se divergir e qual é o maior. Com aplicar=True (--hgb-hct-max),
+    devolve o máximo e regrava o outro exame somente se ele estiver em status 30
+    (nunca se estiver liberado). Falha na leitura não bloqueia o save atual.
+    Devolve (hgb, hct) a usar no exame atual (inalterados se não aplicar)."""
+    hgb_out, hct_out = atual.get("hgb"), atual.get("hct")
+    pred = _eh_item_gaso if origem == "hemo" else _eh_item_hemo
+    try:
+        pares = _pares_exame(telas, pred)
+        if aplicar:
+            pares = pares + _achar_exames_liberados(z, atend, telas, pred)
+    except Exception as e:
+        print(f"  AVISO: não consegui localizar o outro exame para comparar HGB/HCT ({e})")
+        return hgb_out, hct_out
+    if not pares:
+        return hgb_out, hct_out
+
+    lidos = []
+    for t, it in pares:
+        try:
+            vo = _vo_exame(t, it)
+        except Exception as e:
+            print(f"  AVISO: não li HGB/HCT de {it.get('CD_EXAME')} ({e})")
+            continue
+        if not vo:
+            continue
+        vals = ler_hgb_hct_do_gaso(vo) if origem == "hemo" else ler_hgb_hct_do_hemo(vo)
+        st = it.get("IE_STATUS_ATEND")
+        vals.update(t=t, it=it, status=st,
+                    tag=f"{it.get('CD_EXAME')} (prescr {t.nr} seq {it['NR_SEQ_PRESCR']}, status {st})")
+        lidos.append(vals)
+    if not lidos:
+        return hgb_out, hct_out
+
+    def max_campo(chave):
+        av = atual.get(chave)
+        outros = [(x, x.get(chave)) for x in lidos if x.get(chave) not in (None,)]
+        if av is None or not outros:
+            return None, []
+        mx = av
+        for _x, v in outros:
+            if v > mx:
+                mx = v
+        divergiu = any(vdiff(av, v) for _x, v in outros)
+        return mx, (outros if divergiu else [])
+
+    mx_hgb, div_hgb = max_campo("hgb")
+    mx_hct, div_hct = max_campo("hct")
+
+    def fmt(nome, av, mx, outros):
+        partes = [f"{origem} {vtxt(av)}"] + [f"{x['tag']} {vtxt(v)}" for x, v in outros]
+        return f"{nome}: {' | '.join(partes)} → maior {vtxt(mx)}"
+
+    avisos = []
+    if div_hgb:
+        avisos.append(fmt("HGB/HB", atual.get("hgb"), mx_hgb, div_hgb))
+    if div_hct:
+        avisos.append(fmt("HCT", atual.get("hct"), mx_hct, div_hct))
+    if avisos:
+        print("  HGB/HCT divergem entre hemograma e gasometria (" + "; ".join(avisos) + ").")
+        if not aplicar:
+            print("  Use --hgb-hct-max para gravar o maior valor nos dois exames (só status 30; nunca em exame liberado).")
+
+    if not aplicar:
+        return hgb_out, hct_out
+
+    if mx_hgb is not None:
+        hgb_out = mx_hgb
+    if mx_hct is not None:
+        hct_out = mx_hct
+    if avisos:
+        print(f"  --hgb-hct-max: HGB={'-' if hgb_out is None else vtxt(hgb_out)} "
+              f"HCT={'-' if hct_out is None else vtxt(hct_out)} nos dois (exame liberado não é regravado).")
+
+    for x in lidos:
+        it, t, st = x["it"], x["t"], x["status"]
+        if st != 30:
+            print(f"  {x['tag']}: não regravo HGB/HCT (só status 30, nunca liberado)")
+            continue
+        precisa = False
+        if mx_hgb is not None and x.get("hgb") is not None and vdiff(x["hgb"], mx_hgb):
+            precisa = True
+        if mx_hct is not None and x.get("hct") is not None and vdiff(x["hct"], mx_hct):
+            precisa = True
+        if not precisa:
+            continue
+        if origem == "hemo":
+            vals = {}
+            if mx_hgb is not None and x.get("hgb") is not None:
+                vals["hb"] = num_txt(mx_hgb)
+            if mx_hct is not None and x.get("hct") is not None:
+                vals["hct"] = num_txt(mx_hct)
+            if vals:
+                print(f"  {x['tag']}: atualizando HGB/HCT para o maior valor")
+                gaso_lancar(t, it, vals, None, dry, True)
+        else:
+            print(f"  {x['tag']}: atualizando HGB/HCT para o maior valor")
+            hemo_atualizar_hgb_hct(t, it,
+                                   mx_hgb if x.get("hgb") is not None else None,
+                                   mx_hct if x.get("hct") is not None else None, dry)
+    return hgb_out, hct_out
 
 
 # ---------------- Conferir exames liberados (só leitura) ----------------
@@ -4566,13 +4843,18 @@ def lote_digitacao(z, a, itens):
 def lote_digitar(z, a, itens):
     jobs = []
     for e in itens:
+        hemo, gaso = e["hemo"], e["gaso"]
+        if hemo and gaso:
+            hemo, gaso, msgs = hgb_hct_max_lote(hemo, gaso)
+            if msgs:
+                print(f"AT {e['at']}: HGB/HCT unificados (maior valor das tiras): " + "; ".join(msgs))
         cmds, extra = [], (["--dry-run"] if a.dry_run else []) + (["--forcar"] if e["forcar"] else []) + ["--sem-historico"]
         if e["exames"]:
             cmds.append(["resultado", e["at"]] + [x for v in e["exames"] for x in ("--exame", v)] + extra)
-        if e["hemo"]:
-            cmds.append(["hemo", e["at"]] + [x for o in HEMO_OPTS for x in ("--" + o, e["hemo"][o])] + extra)
-        if e["gaso"]:
-            cmds.append(["gaso", e["at"]] + [x for k, v in e["gaso"].items() for x in ("--" + k, v)] + extra)
+        if hemo:
+            cmds.append(["hemo", e["at"]] + [x for o in HEMO_OPTS for x in ("--" + o, hemo[o])] + extra)
+        if gaso:
+            cmds.append(["gaso", e["at"]] + [x for k, v in gaso.items() for x in ("--" + k, v)] + extra)
         if cmds:
             jobs.append((e["at"], cmds))
     if not jobs:
@@ -5144,6 +5426,8 @@ def main():
     g.add_argument("--dry-run", action="store_true"); g.add_argument("--forcar", action="store_true")
     g.add_argument("--com-historico", action="store_true", help="após salvar, compara com o histórico e o PEP")
     g.add_argument("--sem-historico", action="store_true", help="aceito por compatibilidade; o padrão já é não comparar")
+    g.add_argument("--hgb-hct-max", action="store_true",
+                   help="se o HC já estiver salvo, grava o maior HGB/HCT nos dois (só status 30, nunca liberado)")
     g.add_argument("--dump-payload", help="grava o payload do save da gasometria neste arquivo")
     hm = sp.add_parser("hemo", help="digita e salva (sem liberar) Hemograma Completo")
     hm.add_argument("atendimento", type=int)
@@ -5152,6 +5436,8 @@ def main():
     hm.add_argument("--dry-run", action="store_true"); hm.add_argument("--forcar", action="store_true")
     hm.add_argument("--com-historico", action="store_true", help="após salvar, compara com o histórico e o PEP")
     hm.add_argument("--sem-historico", action="store_true", help="aceito por compatibilidade; o padrão já é não comparar")
+    hm.add_argument("--hgb-hct-max", action="store_true",
+                    help="se a gasometria já estiver salva, grava o maior HGB/HCT nos dois (só status 30, nunca liberado)")
     hm.add_argument("--dump-payload", help="grava o payload do save neste arquivo")
     cf = sp.add_parser("conferir",
                        help="só leitura: audita TODOS os exames liberados (status 40) do período")

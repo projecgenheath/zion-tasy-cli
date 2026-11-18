@@ -100,10 +100,12 @@ python3 zion.py conferir --at 100001 100002              # leitura: liberados (s
 ```
 ```bash
 python3 zion.py lote digitacao lote.json [--dry-run]   # 1) todos em Digitação
-python3 zion.py lote digitar   lote.json [--dry-run]   # 2) só salva, sem histórico/PEP (resultado → hemo → gaso por atendimento)
+python3 zion.py lote digitar   lote.json [--dry-run]   # 2) só salva, sem histórico/PEP (resultado → hemo → gaso; HGB/HCT = maior das duas tiras se houver hemo e gaso)
 python3 zion.py lote conferir  lote.json               # 3) só leitura: classifica cada exame
 python3 zion.py lote liberar   lote.json [--dry-run]   # 4) libera só os liberáveis, UM exame por vez
 ```
+Se o atendimento tiver `hemo` e `gaso` no arquivo, `lote digitar` calcula o maior HGB/HB e o maior HCT das duas tiras e lança o mesmo valor nos dois exames, antes de salvar. A regra mínima de eosinófilos do `hemo` não muda.
+
 `"pep_ok"` é obrigatório em `PEP_A_CONFIRMAR`: testes rápidos e tipagens **sem** resultado anterior igual (inclusive NÃO REAGENTE/Negativo) e exames sem referência determinável com trecho no PEP. Ao pôr a sigla em `"pep_ok"`, a IA atesta que leu o trecho do PEP e que ele confirma o resultado. Hemograma, gasometria e bioquímica dentro da referência liberam sem `"pep_ok"`.
 
 Classes da etapa 3 (gravadas em `lote.json.conferencia.json`, permissão 600, **tem dado de paciente: nunca commitar**):
@@ -149,7 +151,8 @@ Siglas (listas em `zion.py`: `SIGLAS_TR_TIPAGEM`, `SIGLAS_HEMO`, `GASO_SIGLAS`, 
 - **Ureia:** só a parte inteira, truncada (30,56 → 30; 11,72 → 11).
 - **Bilirrubina indireta:** aceite o valor recalculado pelo sistema (total − direta), mesmo que difira do aparelho por arredondamento.
 - **Hemograma:** valores como no impresso; plaquetas em 10⁹/L (`--plt 174`); WBC em 10³/µL (`--wbc 14.06`); percentuais arredondados fechando 100 (o CLI faz).
-- **Regra obrigatória do hemograma (automática no `hemo`):** Eosinófilos ≥ 1% sempre; se Leucócitos Totais > 10.000, também Bastonetes ≥ 1%. Os pontos acrescentados saem do maior percentual (normalmente segmentados) e o Total porcentagem Leucograma fica em 100. O CLI imprime o ajuste feito.
+- **Regra obrigatória do hemograma (automática no `hemo`):** Eosinófilos ≥ 1% sempre; se Leucócitos Totais > 10.000, também Bastonetes ≥ 1%. Os pontos acrescentados saem do maior percentual (normalmente segmentados) e o Total porcentagem Leucograma fica em 100. O CLI imprime o ajuste feito. Esta regra **não muda**.
+- **HGB/HCT com hemograma e gasometria no mesmo atendimento:** lançar o **maior** valor entre a tira do HC e a da gasometria, igual nos dois exames. `lote digitar` unifica sozinho antes de salvar. Em `hemo`/`gaso` avulsos, se o outro já estiver salvo e divergir, o CLI avisa o maior. `--hgb-hct-max` relê o outro e grava o maior nos dois; só regrava exame já salvo em status 30, **nunca** se estiver liberado.
 - **PCR:** digite como sai no aparelho (mesmo número e unidade do impresso).
 - **Gasometria:** use `gaso`; ele também preenche a bioquímica equivalente (Na, K, iCa, Cl, Glicose, Lactato) **apenas** se esses exames existirem na prescrição. Campo com erro no aparelho ("Instabilidade" etc.) fica em branco.
 - **Exames que não estão no papel ficam intactos.** Não invente valor nem zere campos.
