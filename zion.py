@@ -4526,6 +4526,40 @@ def lote_digitar(z, a, itens):
 _NEUTROS = ("naoreagente", "negativo", "negativa", "ausente", "ausentes", "naodetectado", "naodetectavel", "normal")
 _POSITIVOS = ("reagente", "positivo", "positiva", "presente", "detectado", "detectavel")
 
+# Listas de siglas da regra de liberação (lote conferir / lote liberar).
+# Mantenha em sincronia com README.md, AGENTS.md e CLAUDE.md.
+#
+# Testes rápidos, tipagens e Coombs: só liberam com resultado anterior igual
+# (classe COERENTE) ou com pep_ok (a IA atesta que leu o trecho do PEP e ele
+# confirma). NÃO REAGENTE / Negativo NÃO liberam sozinhos. Sorologias externas
+# (TOXG, HBSAG, HIV1/2, … em EXAMES_EXTERNOS_BLOQUEADOS) nunca são liberáveis.
+SIGLAS_TR_TIPAGEM = frozenset({
+    "HIV",            # teste rápido HIV (≠ HIV1/2, sorologia externa)
+    "VDRL",           # VDRL
+    "TRS", "TRSIF",   # teste rápido de sífilis
+    "TRTOXO",         # teste rápido toxo (≠ TOXG/TOXM)
+    "TRHBS", "TRHCV", # testes rápidos de hepatite B e C (≠ HBSAG/HCV)
+    "GP-TIP", "TIP", "ABO",  # tipagem ABO/Rh
+    "COOI", "COOD", "CI", "CD",  # Coombs indireto/direto
+})
+# Prefixos/nomes extra: sigla começando com TR (outros testes rápidos) e nomes
+# com "teste rapido", "tipagem", "coombs", "fator rh", "grupo/tipo sanguineo".
+_TR_TIPAGEM_NOME = ("teste rapido", "tipagem", "coombs", "fator rh",
+                    "grupo sangu", "tipo sanguineo", "vdrl", "sifilis")
+
+# Hemograma, gasometria e bioquímica: dentro da referência → DENTRO_REFERENCIA
+# (liberável sem histórico/PEP). Fora da referência ou incoerente → só digitado.
+# GASO_SIGLAS (GASO, GASA, GASV, GAS) entra pelo mesmo critério.
+SIGLAS_HEMO = frozenset({"HC", "HB", "HT", "PLQ", "PLT", "RET"})
+SIGLAS_BIOQUIMICA = frozenset({
+    "CREA", "UREA", "CLCR", "CRU", "MICRO", "PTUR", "PTU24", "AURS", "URN1", "EAS",
+    "NA+", "K+", "MG+", "CA", "CAI", "CAIO", "P", "FOSF", "CL", "CL-",
+    "TGO", "TGP", "BILI", "BT", "BD", "FA", "GGT", "ALB", "AMIL", "LIP", "DHL",
+    "PCR", "PCRP", "VHS", "PCT", "LAC", "LACT",
+    "GLI", "GLIC", "GLICO", "HBA1C",
+    "TAP", "TTPA", "RNI", "FIB", "DDIM", "COAG",
+})
+
 
 def _campo_resultado(x):
     nm = (x.get("nmExame") or "").strip(); sl = _slug(nm)
@@ -4546,6 +4580,107 @@ def _qual_tipo(vs):
 
 def _eh_tipagem(sl):
     return sl in ("abo", "rh", "rhd") or any(k in sl for k in ("tiposanguineo", "fatorrh", "gruposanguineo", "fatorrhd"))
+
+
+def exige_confirmacao_liberacao(cd, nm=""):
+    """True se o exame é teste rápido, tipagem ou Coombs: só libera com histórico igual ou pep_ok."""
+    c = str(cd or "").upper().strip()
+    n = _sem_acento(nm or "").lower()
+    if c in SIGLAS_HEMO or c in GASO_SIGLAS or c in SIGLAS_BIOQUIMICA:
+        return False
+    if c in SIGLAS_TR_TIPAGEM or (c.startswith("TR") and c not in EXAMES_EXTERNOS_BLOQUEADOS):
+        return True
+    if any(k in n for k in _TR_TIPAGEM_NOME):
+        return True
+    return False
+
+
+def _qual_equiv(a, b):
+    """Compara qualitativos: mesmo texto (slug) ou mesma polaridade (NÃO REAGENTE ≈ Negativo).
+    Não usa substring crua: 'reagente' está contido em 'nao reagente'."""
+    sa, sb = _slug(a), _slug(b)
+    if not sa or not sb:
+        return False
+    if sa == sb:
+        return True
+    ta, tb = _qual_tipo(sa), _qual_tipo(sb)
+    return bool(ta and tb and ta == tb and ta != "naorealizado")
+
+
+def _vo_qualitativos(vo):
+    """{slug_campo: (nome, valor)} dos campos qualitativos com valor (ignora observ/idade/não realizado)."""
+    out = {}
+    for x in (vo or {}).get("subExams") or []:
+        c = _campo_resultado(x)
+        if not c:
+            continue
+        nm, sl = c
+        v = sub_val(x)
+        if v in (None, "") or isinstance(v, float):
+            continue
+        if _qual_tipo(_slug(v)) == "naorealizado":
+            continue
+        out[sl] = (nm, str(v).strip())
+    return out
+
+
+def _hist_qual_avaliar(vo, anteriores):
+    """Compara qualitativos atuais com lista de dicts anteriores (antigo→recente).
+    Devolve (hist_ok, incoerencias, linhas_texto). hist_ok só se TODOS os campos
+    atuais tiverem um anterior equivalente."""
+    atual = _vo_qualitativos(vo)
+    if not atual or not anteriores:
+        return False, [], []
+    prev = None
+    for ant in reversed(list(anteriores)):
+        if any(k in ant for k in atual):
+            prev = ant
+            break
+    if not prev:
+        return False, [], []
+    incoer, txt, matched = [], [], 0
+    for sl, (nm, v) in atual.items():
+        if sl not in prev:
+            continue
+        _nm, pv = prev[sl]
+        txt.append(f"{nm}: {v} (último {pv})")
+        if _qual_equiv(v, pv):
+            matched += 1
+        else:
+            incoer.append(f"{nm}: atual {v} ≠ anterior {pv}")
+    return (not incoer) and matched == len(atual), incoer, txt
+
+
+def _hist_qual_anteriores(z, atend, cd, nr_atual, dias, cache, limite_presc=HIST_FALLBACK_MAX):
+    """Qualitativos de exames liberados anteriores no mesmo atendimento (antigo→recente). Só leitura."""
+    ini = dt.datetime.now(TZ) - dt.timedelta(days=dias)
+    fim = dt.datetime.now(TZ)
+    try:
+        rows, _ = listar_liberados(z, ini, fim, atend=atend)
+    except Exception:
+        return []
+    prs = sorted({int(r["NR_PRESCRICAO"]) for r in rows
+                  if r.get("NR_PRESCRICAO") and int(r["NR_PRESCRICAO"]) != int(nr_atual)})
+    out, abertas = [], 0
+    for p in prs:
+        if abertas >= limite_presc:
+            break
+        info = _presc_info(z, p, cache)
+        it = _item_do_exame(info, None, cd)
+        if not it or it.get("IE_STATUS_ATEND") != LIBERADO_STATUS:
+            continue
+        try:
+            t = Resultado(z, atend, p, write=False).abrir()
+            if it["NR_SEQ_PRESCR"] not in t.nodes:
+                continue
+            vo = t.build(it["NR_SEQ_PRESCR"])["ResultVO"]
+        except Exception:
+            continue
+        abertas += 1
+        q = _vo_qualitativos(vo)
+        if q:
+            out.append(q)
+    return out
 
 
 def _ref_avaliar(vo):
@@ -4619,8 +4754,22 @@ def _pep_incoerente(pep, vo):
     return avisos
 
 
-def _classificar_resultado(av, incoer, hist_ok, pep, motivo_notas=None):
-    """Define classe e motivo da conferência (sem I/O). av = saída de _ref_avaliar."""
+def _classificar_resultado(av, incoer, hist_ok, pep, motivo_notas=None, exige_confirmacao=False):
+    """Define classe e motivo da conferência (sem I/O). av = saída de _ref_avaliar.
+
+    exige_confirmacao=True: testes rápidos e tipagens — só COERENTE (resultado
+    anterior igual) ou PEP_A_CONFIRMAR (libera só com pep_ok). Vale também para
+    NÃO REAGENTE/Negativo. hemo/gaso/bioquímica: DENTRO_REFERENCIA libera direto.
+    """
+    if exige_confirmacao:
+        if incoer:
+            return "INCOERENTE", "incoerente com o histórico/PEP: " + "; ".join(incoer[:4])
+        if hist_ok:
+            return "COERENTE", "teste rápido/tipagem de acordo com o resultado anterior"
+        return ("PEP_A_CONFIRMAR",
+                "teste rápido/tipagem exige confirmação no PEP ou resultado anterior igual "
+                "— leia o trecho do PEP e, se confirmar, ponha a sigla em \"pep_ok\" "
+                "(a IA atesta que leu o trecho)")
     if av["fora"]:
         return "FORA_REFERENCIA", "fora da referência: " + "; ".join(av["fora"][:4])
     if av["alterado"]:
@@ -4697,6 +4846,17 @@ def conferir_at(z, atend, siglas=None, dias=HIST_DIAS_PADRAO, n_notas=20):
                 hist_ok = (not h["sem_historico"]) and any(c["historico"] and c["atual"] is not None for c in h["campos"])
             except Exception as e:
                 r["hist_erro"] = str(e)
+        try:
+            ants = _hist_qual_anteriores(z, atend, cd, t.nr, dias, cache)
+            q_ok, q_inc, q_txt = _hist_qual_avaliar(vo, ants)
+            hist_txt += q_txt
+            incoer += q_inc
+            if q_inc:
+                hist_ok = False
+            elif q_ok:
+                hist_ok = True
+        except Exception as e:
+            r["hist_qual_erro"] = str(e)
         r["historico"] = hist_txt[:6]; r["incoerencias"] = incoer
         g = hist_grupo(cd, r["nome"]); pep = []
         if g:
@@ -4709,7 +4869,8 @@ def conferir_at(z, atend, siglas=None, dias=HIST_DIAS_PADRAO, n_notas=20):
         r["pep"] = pep
         incoer += _pep_incoerente(pep, vo)
         r["incoerencias"] = incoer
-        classe, motivo = _classificar_resultado(av, incoer, hist_ok, pep, motivo_notas)
+        classe, motivo = _classificar_resultado(av, incoer, hist_ok, pep, motivo_notas,
+                                               exige_confirmacao=exige_confirmacao_liberacao(cd, r["nome"]))
         r.update(classe=classe, motivo=motivo)
     return {"at": atend, "exames": exames, "notas_motivo": motivo_notas}
 
@@ -4760,8 +4921,8 @@ def lote_conferir(z, a, path, itens):
     if falhas:
         print(f"  Falhas: {', '.join(falhas)}")
     print(f"  Conferência gravada em {cp} (dados de paciente: arquivo local, permissão 600 — nunca commitar)")
-    print("  Etapa 4: `lote liberar` libera COERENTE e DENTRO_REFERENCIA (dentro da referência, mesmo sem histórico/PEP).")
-    print("  PEP_A_CONFIRMAR (sem referência determinável, com trecho no PEP) só com \"pep_ok\".")
+    print("  Etapa 4: `lote liberar` libera COERENTE e DENTRO_REFERENCIA (hemo/gaso/bioquímica dentro da referência, mesmo sem histórico/PEP).")
+    print("  PEP_A_CONFIRMAR (testes rápidos/tipagens sem resultado anterior igual, ou exame sem referência com trecho no PEP) só com \"pep_ok\".")
     print("  Não libera: FORA_REFERENCIA, QUALITATIVO_ALTERADO, INCOERENTE, SEM_REFERENCIA, EXTERNO, SEM_RESULTADO, FORA_DIGITACAO.")
     return conf
 
@@ -4770,7 +4931,8 @@ _CLASSES_LIBERAVEIS = frozenset({"COERENTE", "DENTRO_REFERENCIA"})
 
 
 def _liberaveis(d, pep_ok):
-    """COERENTE e DENTRO_REFERENCIA saem liberáveis; PEP_A_CONFIRMAR só com pep_ok (sem referência determinável)."""
+    """COERENTE e DENTRO_REFERENCIA saem liberáveis; PEP_A_CONFIRMAR só com pep_ok
+    (teste rápido/tipagem sem histórico igual, ou exame sem referência: a IA atesta que leu o PEP)."""
     sim, nao = [], []
     for x in d.get("exames", []):
         if x["classe"] in _CLASSES_LIBERAVEIS or (x["classe"] == "PEP_A_CONFIRMAR" and x["sigla"] in pep_ok):
@@ -4778,7 +4940,9 @@ def _liberaveis(d, pep_ok):
         else:
             motivo = x.get("motivo") or x["classe"]
             if x["classe"] == "PEP_A_CONFIRMAR":
-                motivo = "sem referência determinável; PEP a confirmar (sigla não está em pep_ok)"
+                motivo = ("teste rápido/tipagem (ou exame sem referência) exige confirmação: "
+                          "leia o trecho do PEP e, se confirmar, ponha a sigla em pep_ok "
+                          "(a IA atesta que leu o trecho)")
             nao.append((x, motivo))
     return sim, nao
 
@@ -4804,7 +4968,7 @@ def lote_liberar(z, a, path, itens):
         if sim:
             plano[e["at"]] = sim
             jobs.append((e["at"], [["liberar", e["at"]] + [y for x in sim for y in ("--exame", x["sigla"])] + (["--dry-run"] if a.dry_run else [])]))
-    print(f"LOTE etapa 4 — liberar UM exame por vez, só COERENTE/DENTRO_REFERENCIA (e PEP_A_CONFIRMAR com pep_ok), nunca sorologia externa: "
+    print(f"LOTE etapa 4 — liberar UM exame por vez, só COERENTE/DENTRO_REFERENCIA (hemo/gaso/bioquímica na referência) e PEP_A_CONFIRMAR com pep_ok (TR/tipagem), nunca sorologia externa: "
           f"{sum(len(v) for v in plano.values())} exame(s) em {len(jobs)} atendimento(s)" + (" (dry-run: nada é enviado)" if a.dry_run else ""))
     liberados = []
     if jobs:
@@ -4921,7 +5085,7 @@ def main():
     hi.add_argument("--json", dest="as_json", action="store_true")
     lt = sp.add_parser("lote", help="arquivo de lote: digitacao → digitar → conferir → liberar, em paralelo entre atendimentos")
     lt.add_argument("etapa", choices=["digitacao", "digitar", "conferir", "liberar"],
-                    help="digitacao=coloca em Digitação; digitar=salva resultados; conferir=histórico/PEP/referência; liberar=dentro da referência e coerentes")
+                    help="digitacao=coloca em Digitação; digitar=salva resultados; conferir=histórico/PEP/referência; liberar=hemo/gaso/bioq na referência e TR/tipagem confirmados")
     lt.add_argument("arquivo", help="JSON (ou YAML) com {\"atendimentos\": [...]}")
     lt.add_argument("--dry-run", action="store_true", help="não envia nada (digitacao/digitar/liberar)")
     lt.add_argument("--dias", type=int, default=HIST_DIAS_PADRAO, help="janela do histórico na conferência (padrão 90)"); lt.add_argument("-j", "--workers", type=int, default=LOTE_WORKERS, help="atendimentos em paralelo (padrão 4)")

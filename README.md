@@ -2,7 +2,7 @@
 
 > ⚠️ **Faça SÓ o que o usuário pediu.** Pedido para colocar em digitação = só o comando de digitação e a confirmação dos atendimentos movidos. Não rode conferir, historico, fila nem resumo de resultados/liberações do dia sem pedido explícito. A comparação com o histórico/PEP só acontece quando você digita/salva um resultado.
 
-> **Ordem do trabalho (em lote):** 1) colocar TODOS os atendimentos em digitação; 2) digitar os resultados de todos (use `--sem-historico` para ganhar tempo); 3) conferir todos com o PEP e com os resultados anteriores (`historico`); 4) liberar (`liberar`, um exame por vez) todo exame **dentro da referência** e coerente com o histórico/PEP, mesmo sem resultado anterior ou nota no PEP. Fora da referência, qualitativo alterado (REAGENTE/Positivo), sem referência determinável ou incoerente (variação grande vs o anterior, ou PEP dizendo o contrário) fica só digitado e o usuário é avisado. Para vários atendimentos use os comandos em lote (veja **Trabalho em lote**: `lote digitacao/digitar/conferir/liberar ARQ`). Nunca faça um atendimento inteiro de cada vez. Quando o usuário pede só uma etapa, faça só aquela etapa.
+> **Ordem do trabalho (em lote):** 1) colocar TODOS os atendimentos em digitação; 2) digitar os resultados de todos (use `--sem-historico` para ganhar tempo); 3) conferir todos com o PEP e com os resultados anteriores (`historico`); 4) liberar (`liberar`, um exame por vez) segundo a regra: **hemograma (HC), gasometria e bioquímica** dentro da referência podem ser liberados mesmo sem histórico/PEP; se estiverem fora da referência ou incoerentes, ficam só digitados. **Testes rápidos e tipagens** (HIV, VDRL, TRS/sífilis, hepatites TR, outros TR, GP-TIP/tipagem/fator Rh, COOI/Coombs) só liberam com resultado anterior igual ou com confirmação no PEP (`pep_ok`: a IA atesta que leu o trecho). Vale também para NÃO REAGENTE/Negativo. Sem confirmação: classe `PEP_A_CONFIRMAR`, não liberar. Exame externo, sem resultado ou fora de Digitação nunca libera. Para vários atendimentos use os comandos em lote (veja **Trabalho em lote**: `lote digitacao/digitar/conferir/liberar ARQ`). Nunca faça um atendimento inteiro de cada vez. Quando o usuário pede só uma etapa, faça só aquela etapa.
 
 ## 🔐 Login: a IA pode fazer pela pessoa
 
@@ -34,7 +34,7 @@ CLI em Python para operar o módulo de Laboratório do **Zion / Philips Tasy 5.0
 - relê os valores depois de salvar e compara com o que foi enviado;
 - **confere** todos os exames liberados do dia (erros de digitação e resultados críticos) — só leitura.
 
-> ⚠️ `resultado`/`hemo`/`gaso` **só salvam**. Liberar é um passo separado e explícito (`liberar`), **um exame por vez**, para exame **dentro da referência** e coerente com o histórico/PEP (mesmo sem resultado anterior ou nota no PEP). Fora da referência, qualitativo alterado, sem referência determinável ou incoerente não libera. Nunca "Liberar todos".
+> ⚠️ `resultado`/`hemo`/`gaso` **só salvam**. Liberar é um passo separado e explícito (`liberar`), **um exame por vez**. Hemograma, gasometria e bioquímica **dentro da referência** podem ser liberados mesmo sem histórico/PEP. Testes rápidos e tipagens só com resultado anterior igual ou com `pep_ok` (a IA leu e confirmou o trecho do PEP), inclusive se forem NÃO REAGENTE/Negativo. Fora da referência, incoerente, sem confirmação ou exame externo não libera. Nunca "Liberar todos".
 
 > ⚠️ **sorologia ≠ teste rápido.** Sorologias (Toxoplasmose IgG/IgM, Anti-HCV, HBsAg, CMV, Rubéola, Sorologia HIV 1/2, etc.) vão para **laboratório externo** — o CLI **recusa** qualquer digitação nelas (nem `--forcar` libera). Testes rápidos (`TRTOXO`, `HIV`, `TRS`, `TRHCV`, …) continuam normais.
 
@@ -220,7 +220,7 @@ python3 zion.py hemo 123456 --rbc 4.04 --hgb 13.3 --hct 36 --vcm 89.1 --hcm 32.8
 ### `liberar AT --exame SIGLA [--exame SIGLA ...] [--dry-run]`
 Aprova e libera **um exame por vez**, com as mesmas chamadas da tela (botão direito no exame > *Aprovar exame* > Ok; botão direito > *Liberar exame* > Ok). Nunca usa *Liberar todos*.
 
-**Regra:** libere o exame que estiver **dentro da referência**, mesmo sem resultado anterior ou trecho compatível no PEP (`historico AT`). Não libere se estiver **fora da referência**, for qualitativo alterado (REAGENTE/Positivo) ou sem referência determinável, ou se for **incoerente** com o histórico/PEP (variação grande vs o anterior, ou o PEP dizendo o contrário). Esses ficam só digitados (status 30) e o usuário é avisado.
+**Regra:** **hemograma (HC), gasometria e bioquímica** dentro da referência podem ser liberados mesmo sem resultado anterior ou trecho no PEP (`historico AT`); se estiverem fora da referência ou incoerentes (variação grande vs o anterior, ou o PEP dizendo o contrário), ficam só digitados (status 30) e o usuário é avisado. **Testes rápidos e tipagens** (HIV, VDRL, TRS/sífilis, TRTOXO, TRHBS, TRHCV e outros TR, GP-TIP/tipagem/fator Rh, COOI/Coombs) só liberam com resultado anterior **igual** ou com confirmação no PEP. Isso vale mesmo para NÃO REAGENTE/Negativo. Sem confirmação, a conferência em lote classifica como `PEP_A_CONFIRMAR` e o exame só sai com `pep_ok` (a IA atesta que leu o trecho do PEP). Exame externo, sem resultado ou fora de Digitação nunca libera.
 
 - Só age em exame em **Digitação (30)** com **resultado salvo** (não vazio); outros status são ignorados.
 - **Nunca** age em sorologia/exame de laboratório externo (mesma trava de `resultado`).
@@ -263,14 +263,18 @@ python3 zion.py lote digitar   lote.json [--dry-run]   # 2) salva tudo (sem hist
 python3 zion.py lote conferir  lote.json               # 3) só leitura: classifica cada exame
 python3 zion.py lote liberar   lote.json [--dry-run]   # 4) libera só os liberáveis, UM exame por vez
 ```
-`"pep_ok"` só é necessário em `PEP_A_CONFIRMAR` (exame sem referência determinável, ex.: tipagem). HIV/VDRL não reagente, dentro da referência, libera sem `"pep_ok"`.
+`"pep_ok"` é obrigatório em `PEP_A_CONFIRMAR`: testes rápidos e tipagens **sem** resultado anterior igual (inclusive NÃO REAGENTE/Negativo) e exames sem referência determinável com trecho no PEP. Ao pôr a sigla em `"pep_ok"`, a IA atesta que leu o trecho do PEP e que ele confirma o resultado. Hemograma, gasometria e bioquímica dentro da referência liberam sem `"pep_ok"`.
 
 Classes da etapa 3 (gravadas em `lote.json.conferencia.json`, permissão 600, **tem dado de paciente: nunca commitar**):
-- `COERENTE`: dentro da referência e de acordo com resultados anteriores (sem mudança grande nem faixa crítica) → **liberado** na etapa 4.
-- `DENTRO_REFERENCIA`: dentro da referência, mesmo sem resultado anterior ou trecho no PEP (qualitativo normal como NÃO REAGENTE/Negativo também entra aqui) → **liberado** na etapa 4, sem precisar de `"pep_ok"`.
-- `PEP_A_CONFIRMAR`: sem referência determinável, mas há trecho no PEP (mostrado na saída). **Leia o trecho**; se bater, ponha a sigla em `"pep_ok"` daquele atendimento e rode `lote liberar`. Sem `pep_ok` não libera.
-- `FORA_REFERENCIA` / `INCOERENTE` / `QUALITATIVO_ALTERADO` / `SEM_REFERENCIA`: fica só digitado; avise o usuário com o motivo.
+- `COERENTE`: de acordo com o resultado anterior (bioquímica/hemo/gaso dentro da referência, ou teste rápido/tipagem com valor anterior **igual**) → **liberado** na etapa 4.
+- `DENTRO_REFERENCIA`: **só hemograma, gasometria e bioquímica** dentro da referência, mesmo sem resultado anterior ou trecho no PEP → **liberado** na etapa 4, sem `"pep_ok"`. Testes rápidos e tipagens **não** entram nesta classe.
+- `PEP_A_CONFIRMAR`: teste rápido ou tipagem sem resultado anterior igual (vale para NÃO REAGENTE/Negativo), ou exame sem referência determinável com trecho no PEP (mostrado na saída). **Leia o trecho**; se confirmar o resultado, ponha a sigla em `"pep_ok"` daquele atendimento (a IA atesta que leu) e rode `lote liberar`. Sem `pep_ok` não libera.
+- `FORA_REFERENCIA` / `INCOERENTE` / `QUALITATIVO_ALTERADO` / `SEM_REFERENCIA`: fica só digitado; avise o usuário com o motivo. `pep_ok` não sobrescreve essas classes.
 - `EXTERNO` (sorologia DB: só PDF), `SEM_RESULTADO`, `FORA_DIGITACAO`, `NAO_ENCONTRADO`: nunca liberados.
+
+Siglas (listas em `zion.py`: `SIGLAS_TR_TIPAGEM`, `SIGLAS_HEMO`, `GASO_SIGLAS`, `SIGLAS_BIOQUIMICA`):
+- **Testes rápidos e tipagens** (exigem confirmação): `HIV`, `VDRL`, `TRS`, `TRSIF`, `TRTOXO`, `TRHBS`, `TRHCV`, qualquer outra sigla começando com `TR`, `GP-TIP`, `TIP`, `ABO`, `COOI`, `COOD`, `CI`, `CD`; também o nome contendo "teste rápido", "tipagem", "coombs", "fator rh" ou "grupo/tipo sanguíneo".
+- **Hemograma / gasometria / bioquímica** (liberam se dentro da referência): `HC`, `HB`, `HT`, `PLQ`, `PLT`, `RET`; `GASO`, `GASA`, `GASV`, `GAS`; `CREA`, `UREA`, `TGO`, `TGP`, `BILI`, `NA+`, `K+`, `GLI`, `PCR`, `TAP`, `TTPA` e as demais de `SIGLAS_BIOQUIMICA`.
 
 `lote liberar` recusa conferência com mais de 60 min (rode `lote conferir` de novo), libera em paralelo entre atendimentos mas **sequencial dentro de cada um**, usa a mesma lógica do `liberar` (para no primeiro aviso daquele atendimento) e termina com um **resumo único**: liberados, digitados e não liberados (com motivo) e falhas.
 
@@ -375,7 +379,7 @@ Cada exame do Tasy recebe **só o PDF dele**:
 
 ## Segurança
 
-- Só `liberar` libera, **um exame por vez**, e só exame **dentro da referência** e coerente com o histórico/PEP (mesmo sem anterior ou nota no PEP). Fora da referência, qualitativo alterado, sem referência determinável ou incoerente não libera; os demais comandos só salvam.
+- Só `liberar` libera, **um exame por vez**. Hemograma, gasometria e bioquímica dentro da referência podem ser liberados mesmo sem histórico/PEP. Testes rápidos e tipagens só com resultado anterior igual ou `pep_ok` (PEP confirmado). Fora da referência, incoerente, sem confirmação ou exame externo não libera; os demais comandos só salvam.
 - Rode sempre `--dry-run` antes de salvar.
 - Depois de salvar, o CLI relê e compara; confira a releitura.
 - Avisos de valor fora da referência / consistência / eTFG são esperados e **não** cancelam o save.
