@@ -121,6 +121,13 @@ Siglas (listas em `zion.py`: `SIGLAS_TR_TIPAGEM`, `SIGLAS_HEMO`, `GASO_SIGLAS`, 
 
 **Sessão / login:** todos os comandos reaproveitam a sessão salva (`~/.config/zion-cli/session.json`); o token é renovado sozinho (refresh) e só há login quando a sessão expira de vez. Em lote, o processo principal valida a sessão uma vez antes de abrir os workers; cada worker carrega a mesma sessão salva e, se precisar renovar, faz isso sob trava de arquivo (os outros reaproveitam a renovação, ninguém loga em paralelo). Lembre: um login novo derruba a sessão aberta da pessoa no Tasy.
 
+## Velocidade / perfil de tempo
+- Cada chamada ao Tasy leva ~0,15–0,4 s (latência do servidor); o tempo total é quase só a soma das chamadas em sequência.
+- Leituras (`ler`, `historico`, conferência do lote) abrem as telas das prescrições, fazem os `WResultEntry/build`, as séries anteriores e os dados de prescrições antigas **em paralelo** (até 4; `ZION_BUILD_WORKERS=1` desliga). Gravações (`digitacao`, `resultado`, `hemo`, `gaso`, `liberar`) continuam sequenciais, igual ao navegador.
+- `ZION_TIMING=1 python3 zion.py ...` imprime no fim (stderr) as requisições HTTP somadas por serviço (contagem, média, máximo). Use para achar gargalos. Não mostra dados de paciente.
+- Gargalos conhecidos: `digitacao` (~20 chamadas por amostra e etapa, sequenciais), `liberar` (`generatePdfService` ~1,4 s por exame) e `historico` sem série no gráfico (abre prescrições liberadas antigas).
+- PEP x teste qualitativo: a tipagem escrita na nota ("TS O POSITIVO", "Rh negativo") é ignorada ao procurar POSITIVO/NEGATIVO de teste rápido, e "NR" isolado conta como não reagente. Campos ABO/Rh não entram nessa checagem de polaridade.
+
 ## Fluxo padrão
 1. `python3 zion.py listar AT` para ver o que existe.
 2. `python3 zion.py digitacao AT` para levar os exames a Digitação (`--dry-run` antes se houver dúvida).

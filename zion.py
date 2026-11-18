@@ -33,6 +33,29 @@ import argparse, contextlib, copy, difflib, getpass, json, os, re, subprocess, s
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
+# ---------- perfil de tempo opcional (ZION_TIMING=1): soma por serviço, impresso no fim (stderr) ----------
+_TIMING = {}
+
+
+def _timing_hook(r, *a, **k):
+    try:
+        path = r.request.path_url.split("?")[0]
+        path = path.split("/service/", 1)[-1] if "/service/" in path else path
+        t = _TIMING.setdefault(path, [0, 0.0, 0.0])
+        e = r.elapsed.total_seconds(); t[0] += 1; t[1] += e; t[2] = max(t[2], e)
+    except Exception:
+        pass
+    return r
+
+
+def _timing_report():
+    if not _TIMING:
+        return
+    tot = sum(v[1] for v in _TIMING.values()); n = sum(v[0] for v in _TIMING.values())
+    sys.stderr.write(f"\n[ZION_TIMING] {n} requisições HTTP, {tot:.1f}s somados (servidor+rede)\n")
+    for k, (c, sm, mx) in sorted(_TIMING.items(), key=lambda kv: -kv[1][1])[:15]:
+        sys.stderr.write(f"  {sm:6.2f}s  {c:4d}x  méd {sm / c:.2f}s  máx {mx:.2f}s  {k}\n")
+
 DEFAULT_URL = "https://sbsj.zion-srv.com"
 DEFAULT_PROFILE = "HMMCC - Laboratório - Biomédico"
 DEFAULT_SETOR = "HMMCC - Serv. Laboratório Análises Clínicas"
@@ -269,6 +292,8 @@ class Zion:
     def __init__(self, verbose=False, cli_user=None):
         self.cli_user = cli_user
         self.s = requests.Session()
+        if os.environ.get("ZION_TIMING"):
+            self.s.hooks["response"].append(_timing_hook)
         self.s.headers.update({
             "Accept": "application/json, text/plain, */*",
             "Content-Type": "application/json;charset=UTF-8",
@@ -1031,14 +1056,39 @@ def prescricoes(z, atend):
 
 def abrir_telas(z, atend, write):
     data, prs = prescricoes(z, atend)
-    telas = [Resultado(z, atend, nr, write).abrir() for nr in prs]
+    if not write and len(prs) > 1 and BUILD_WORKERS > 1:   # só leitura: abre as telas das prescrições em paralelo
+        with ThreadPoolExecutor(max_workers=min(BUILD_WORKERS, len(prs))) as ex:
+            telas = list(ex.map(lambda nr: Resultado(z, atend, nr, write).abrir(), prs))
+    else:
+        telas = [Resultado(z, atend, nr, write).abrir() for nr in prs]
     return data, [t for t in telas if t.items]
+
+
+BUILD_WORKERS = int(os.environ.get("ZION_BUILD_WORKERS", "4"))
+
+
+def prefetch_builds(pares):
+    """Só leitura: WResultEntry/build de vários exames em paralelo (cada build é independente).
+    pares = [(Resultado, seq_prescr)]. Devolve {(nr, seq): resposta}; falha individual -> ausente (o chamador refaz)."""
+    pares = [(t, q) for t, q in pares if q in t.nodes]
+    out = {}
+    if len(pares) < 2 or BUILD_WORKERS < 2:
+        return out
+    with ThreadPoolExecutor(max_workers=min(BUILD_WORKERS, len(pares))) as ex:
+        futs = {ex.submit(t.build, q): (t.nr, q) for t, q in pares}
+        for f in as_completed(futs):
+            try:
+                out[futs[f]] = f.result()
+            except Exception:
+                pass
+    return out
 
 
 def cmd_ler(z, atend):
     data, telas = abrir_telas(z, atend, write=False)
     if not telas:
         print("Nenhum exame em Digitação (30) para este atendimento."); return
+    pre = prefetch_builds([(t, it["NR_SEQ_PRESCR"]) for t in telas for it in t.items])
     amos = {a["row"]["NR_PRESCRICAO"]: a["row"].get("NR_SEQ_AMOSTRA") for a in data}
     for t in telas:
         print(f"== prescrição {t.nr} (resultado {t.seq_res}, amostra {amos.get(t.nr)})")
@@ -1046,7 +1096,7 @@ def cmd_ler(z, atend):
             seq = it["NR_SEQ_PRESCR"]
             if seq not in t.nodes:
                 print(f"  {it['CD_EXAME']:<8} seq {seq}: fora da árvore de digitação"); continue
-            vo = t.build(seq)["ResultVO"]
+            vo = (pre.get((t.nr, seq)) or t.build(seq))["ResultVO"]
             if str(it.get("CD_EXAME", "")).upper() == HEMO_SIGLA:
                 cmd_ler_hemo(t, it, vo); continue
             s = main_sub(vo); v = cur_value(vo)
@@ -3363,6 +3413,10 @@ def _hist_fallback_liberados(z, atend, cd, nr_atual, dias, cache, limite_presc=H
         return {}
     prs = sorted({int(r["NR_PRESCRICAO"]) for r in rows if r.get("NR_PRESCRICAO") and int(r["NR_PRESCRICAO"]) != int(nr_atual)}, reverse=True)
     out = {}; abertas = 0
+    falta = [p for p in prs[:12] if p not in cache]
+    if len(falta) > 1 and BUILD_WORKERS > 1:   # só leitura: dados das prescrições em paralelo (enche o cache)
+        with ThreadPoolExecutor(max_workers=min(BUILD_WORKERS, len(falta))) as ex:
+            list(ex.map(lambda p: _presc_info(z, p, cache), falta))
     for p in prs:
         if abertas >= limite_presc:
             break
@@ -3632,15 +3686,34 @@ def cmd_historico(z, atend, exames=None, dias=HIST_DIAS_PADRAO, notas=1, as_json
     if not alvos:
         print("Nenhum exame encontrado para comparar."); return
     hs = []
-    for t, it in sorted(alvos, key=lambda x: (x[0].nr, x[1].get("NR_SEQ_PRESCR") or 0)):
-        if it["NR_SEQ_PRESCR"] not in t.nodes:
+    pre = prefetch_builds([(t, it["NR_SEQ_PRESCR"]) for t, it in alvos])
+    ordem = sorted(alvos, key=lambda x: (x[0].nr, x[1].get("NR_SEQ_PRESCR") or 0))
+    vos = {}
+    for t, it in ordem:
+        if it["NR_SEQ_PRESCR"] in t.nodes:
+            vos[(t.nr, it["NR_SEQ_PRESCR"])] = (pre.get((t.nr, it["NR_SEQ_PRESCR"])) or t.build(it["NR_SEQ_PRESCR"]))["ResultVO"]
+    num = lambda vo: any(x.get("ieFormatoResultado") in ("V", "DV", "P") for x in vo.get("subExams") or [])
+    # séries anteriores (getChartRecords etc.) em paralelo — só leitura; impressão continua na ordem
+    hpre = {}
+    calc = [(t, it) for t, it in ordem if (t.nr, it["NR_SEQ_PRESCR"]) in vos and num(vos[(t.nr, it["NR_SEQ_PRESCR"])])]
+    if len(calc) > 1 and BUILD_WORKERS > 1:
+        with ThreadPoolExecutor(max_workers=min(BUILD_WORKERS, len(calc))) as ex:
+            futs = {ex.submit(historico_exame, z, it, vos[(t.nr, it["NR_SEQ_PRESCR"])], atend, dias, cache, nr=t.nr):
+                    (t.nr, it["NR_SEQ_PRESCR"]) for t, it in calc}
+            for f in as_completed(futs):
+                try:
+                    hpre[futs[f]] = f.result()
+                except Exception:
+                    pass
+    for t, it in ordem:
+        if (t.nr, it["NR_SEQ_PRESCR"]) not in vos:
             continue
-        vo = t.build(it["NR_SEQ_PRESCR"])["ResultVO"]
-        if not any(x.get("ieFormatoResultado") in ("V", "DV", "P") for x in vo.get("subExams") or []):
+        vo = vos[(t.nr, it["NR_SEQ_PRESCR"])]
+        if not num(vo):
             if not as_json:
                 print(f"  {it['CD_EXAME']:<8} {it['NM_EXAME'].strip()[:40]}: exame sem campo numérico — sem comparação")
             continue
-        h = historico_exame(z, it, vo, atend, dias, cache, nr=t.nr)
+        h = hpre.get((t.nr, it["NR_SEQ_PRESCR"])) or historico_exame(z, it, vo, atend, dias, cache, nr=t.nr)
         h["prescricao"] = t.nr
         hs.append(h)
         if not as_json:
@@ -4730,11 +4803,24 @@ def _ref_fora(vo):
     return _ref_avaliar(vo)["fora"]
 
 
+_RE_TIPAGEM_TXT = re.compile(r"\b(ab|a|b|o)\s*(\(?\s*rh\s*\)?\s*)?[:\-]?\s*(positivo|negativo|pos|neg)\b|"
+                             r"\b(fator\s*)?rh\s*(\(d\))?\s*[:\-]?\s*(positivo|negativo)\b")
+
+
+def _pep_sem_tipagem(t):
+    """Texto do PEP em minúsculas sem acento e sem a tipagem ("TS O POSITIVO", "Rh negativo"), para que o
+    POSITIVO/NEGATIVO da tipagem não seja lido como resultado de teste rápido/sorologia."""
+    return _RE_TIPAGEM_TXT.sub(" ", _sem_acento(str(t)).lower())
+
+
 def _pep_incoerente(pep, vo):
     """Trechos do PEP com polaridade oposta a um resultado qualitativo normal/alterado."""
     tipos = []
     for x in vo.get("subExams") or []:
         if not _campo_resultado(x):
+            continue
+        nmx = _slug(x.get("nmExame") or "")
+        if "fatorrh" in nmx or "tiposanguineo" in nmx or "abo" in nmx:   # Rh POSITIVO/NEGATIVO não é polaridade de teste
             continue
         v = sub_val(x)
         if isinstance(v, str):
@@ -4745,8 +4831,9 @@ def _pep_incoerente(pep, vo):
         return []
     tipo, avisos = tipos[0], []
     for p in pep:
-        ts = _slug(p.get("trecho") or "")
-        tem_n, tem_p = any(n in ts for n in _NEUTROS), any(q in ts for q in _POSITIVOS)
+        bruto = _pep_sem_tipagem(p.get("trecho") or "")
+        ts = _slug(bruto)
+        tem_n, tem_p = any(n in ts for n in _NEUTROS) or bool(re.search(r"\bnr\b", bruto)), any(q in ts for q in _POSITIVOS)
         if tipo == "neutro" and tem_p and not tem_n:
             avisos.append(f"PEP {p.get('dt') or ''} sugere resultado alterado: {(p.get('trecho') or '')[:120]}")
         elif tipo == "positivo" and tem_n and not tem_p:
@@ -5210,6 +5297,8 @@ def main():
         except Exception as e:   # nunca bloqueia: o resultado já está salvo
             print(f"AVISO: comparação com o histórico não concluída ({e}) — resultado salvo normalmente")
     log(f"[{time.time() - t0:.1f}s, {z.ncalls} chamadas de serviço]")
+    if os.environ.get("ZION_TIMING"):
+        _timing_report()
 
 
 if __name__ == "__main__":
