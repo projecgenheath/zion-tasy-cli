@@ -2,6 +2,8 @@
 
 > ⚠️ **Faça SÓ o que o usuário pediu.** Pedido para colocar em digitação = só o comando de digitação e a confirmação dos atendimentos movidos. Não rode conferir, historico, fila nem resumo de resultados/liberações do dia sem pedido explícito. A comparação com o histórico/PEP só acontece quando você digita/salva um resultado.
 
+> **Ordem do trabalho (em lote):** 1) colocar TODOS os atendimentos em digitação; 2) digitar os resultados de todos (use `--sem-historico` para ganhar tempo); 3) conferir todos com o PEP e com os resultados anteriores (`historico`); 4) liberar (`liberar`, um exame por vez) só os coerentes e dentro da referência. Os incoerentes ficam digitados e o usuário é avisado. Nunca faça um atendimento inteiro de cada vez. Quando o usuário pede só uma etapa, faça só aquela etapa.
+
 ## 🔐 Login: a IA pode fazer pela pessoa
 
 - A pessoa pode mandar o **usuário e a senha direto no chat** da IA. Não precisa de formulário nem campo seguro.
