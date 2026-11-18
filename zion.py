@@ -10,11 +10,12 @@ Uso:
   python3 zion.py digitacao ATENDIMENTO [--dry-run] [--desde STATUS] [--de] [--ate]
   # Hora da solicitação = campo DT_PRESCRICAO (dd/mm/aaaa HH:MM, America/Sao_Paulo)
   python3 zion.py ler ATENDIMENTO              # valores salvos dos exames em Digitação
-  python3 zion.py resultado AT --exame NA+=134.9 [--exame ...] [--dry-run] [--forcar]
+  python3 zion.py resultado AT --exame NA+=134.9 [--exame ...] [--dry-run] [--forcar] [--com-historico]
   python3 zion.py gaso AT --na 134.9 --k 4.37 --ica 1.08 --cl 105.7 [--glu --lac --ph ...] [--dry-run] [--forcar]
-  (nunca libera; após salvar relê via build e compara)
-  python3 zion.py historico AT [--exame CREA] [--dias 90] [--notas 1] [--json]   # só leitura
-  (resultado/hemo/gaso/conferir comparam com o histórico; --sem-historico desliga; nunca bloqueia o save)
+  (nunca libera; após salvar relê via build e compara os campos gravados)
+  python3 zion.py historico AT [--exame CREA] [--dias 90] [--notas 1] [--json]   # só leitura; etapa 3
+  (resultado/hemo/gaso NÃO comparam com o histórico após salvar; --com-historico liga.
+   --sem-historico é aceito e não faz nada. Conferência: historico / lote conferir)
   python3 zion.py db-login --cpf CPF --password-stdin [--serv-sol 2517530] [--otp COD]
   python3 zion.py db-buscar AT [--chave X] [--pedido N] [--json]   # só leitura
   python3 zion.py db-anexar AT [--exame TOXG] [--dry-run] [--substituir]
@@ -979,24 +980,22 @@ class Resultado:
         return [n["sqlProjection"] for n in (d or {}).get("dados", [])]
 
     def abrir(self):
+        """Monta grupos e nós da prescrição. Pula chamadas só de UI (obterPropriedades,
+        árvore sem filtro, executeQuery no fim) cujos retornos o CLI não usa. Mantém
+        a procedure 1173 no modo gravação, o ativar e a árvore filtrada."""
         z = self.z
-        z.post("WJTreeNew/obterPropriedades", [I(TREE_OBJ)])
         if self.write:   # a tela chama ao abrir a digitação (prepara laudo/resultado) - só no modo gravação
             z.post("CorLabF3/executaProcedurePadrao1173", [H({"NR_PRESCRICAO_P": self.nr, "IE_SOMENTE_AMOSTRA_P": False,
                    "IE_DIGITACAO_P": "S", "IE_GERA_LAUDO_P": "S", "IE_VINCULA_FORMATO_P": "S"})])
-        self.tree(1, {}, {})
         self.ativar()
         if not self.items: return self
         it0 = self.items[0]
         self.seq_res = it0["NR_SEQ_RESULTADO"]
         self.filt = self.filtro(self.seq_res, it0.get("NR_SEQUENCIA", 1))
-        z.post("WJTreeNew/obterPropriedades", [I(TREE_OBJ)])
         self.groups = self.tree(1, {}, self.filt)
         for g in self.groups:
             for n in self.tree(2, g, self.filt):
                 self.nodes[n["NR_SEQ_PRESCR"]] = (g, n)
-        z.post("CorLabF3/executeQuery", [S("GET_QT_SEM_DIGITACAO_PRESCR"), H({})])
-        z.post("CorLabF3/executeQuery", [S("GET_IE_DUPLA_CHECAGEM_RES"), H({})])
         return self
 
     def build(self, seq_prescr):
@@ -1008,23 +1007,18 @@ class Resultado:
         return self.z.post("WResultEntry/build", [H({"NR_PRESCRICAO_P": self.nr, "NR_SEQUENCIA_P": seq_prescr,
                            "PERSON_P": person, "ALLOW_NOT_ACCEPTABLE_P": True})])
 
-    def clicar(self, seq_prescr, nr_seq_exame):
-        z = self.z; g, n = self.nodes[seq_prescr]
-        self.tree(3, n, self.filt)
-        z.post("CorLabF3/executeQuery", [S("GET_QT_SEM_DIGITACAO_PRESCR"), H({"NR_SEQ_RESULTADO": self.seq_res})])
-        self.ativar()
-        z.post("CorLabF3/executeQuery", [S("GET_IE_DUPLA_CHECAGEM_RES"), H({"NR_SEQ_EXAME": nr_seq_exame})])
+    def clicar(self, seq_prescr, nr_seq_exame=None):
+        """O valor vem só do build. A tela também expande a árvore e reconsulta
+        itens; o CLI não usa esses retornos e eles não entram no payload."""
         return self.build(seq_prescr)
 
-    def salvar(self, vo, seq_prescr, nr_seq_exame):
-        z = self.z; g, n = self.nodes[seq_prescr]
+    def salvar(self, vo, seq_prescr, nr_seq_exame=None):
+        """Grava, roda a consistência e relê via build. Pula o refresh de árvore
+        e itens depois do save (a tela faz; o CLI só usa r, cons e o VO relido)."""
+        z = self.z
         r = z.post("WResultEntry/save", [H(vo)])
         cons = z.post("CorLabF3/executeProcedure", [S("CONSISTE_APROV_FORMULA"), H({"NR_PRESCRICAO_P": self.nr, "NR_SEQ_PRESCR_P": seq_prescr})])
         b = self.build(seq_prescr)
-        self.tree(2, g, self.filt)
-        z.post("CorLabF3/executeQuery", [S("GET_QT_SEM_DIGITACAO_PRESCR"), H({"NR_SEQ_RESULTADO": self.seq_res})])
-        self.ativar()
-        z.post("CorLabF3/executeQuery", [S("GET_IE_DUPLA_CHECAGEM_RES"), H({"NR_SEQ_EXAME": nr_seq_exame})])
         return r, cons, b
 
 
@@ -5141,20 +5135,23 @@ def main():
     r = sp.add_parser("resultado"); r.add_argument("atendimento", type=int)
     r.add_argument("--exame", action="append", required=True, help="SIGLA=valor ou SIGLA.campo=valor, ex.: TGO=20.7, BILI.total=0.64")
     r.add_argument("--dry-run", action="store_true"); r.add_argument("--forcar", action="store_true")
-    r.add_argument("--sem-historico", action="store_true", help="não compara com o histórico após salvar")
+    r.add_argument("--com-historico", action="store_true", help="após salvar, compara com o histórico e o PEP")
+    r.add_argument("--sem-historico", action="store_true", help="aceito por compatibilidade; o padrão já é não comparar")
     r.add_argument("--dump-payload", help="grava os payloads do save neste arquivo")
     g = sp.add_parser("gaso"); g.add_argument("atendimento", type=int)
     for _, opt, _ in GASO_FIELDS: g.add_argument("--" + opt, type=str)
     g.add_argument("--obs", type=str, help="observação da gasometria")
     g.add_argument("--dry-run", action="store_true"); g.add_argument("--forcar", action="store_true")
-    g.add_argument("--sem-historico", action="store_true", help="não compara com o histórico após salvar")
+    g.add_argument("--com-historico", action="store_true", help="após salvar, compara com o histórico e o PEP")
+    g.add_argument("--sem-historico", action="store_true", help="aceito por compatibilidade; o padrão já é não comparar")
     g.add_argument("--dump-payload", help="grava o payload do save da gasometria neste arquivo")
     hm = sp.add_parser("hemo", help="digita e salva (sem liberar) Hemograma Completo")
     hm.add_argument("atendimento", type=int)
     for o in ("rbc", "hgb", "hct", "vcm", "hcm", "chcm", "rdw", "wbc", "neu", "lym", "mon", "eos", "bas", "plt", "vpm"):
         hm.add_argument("--" + o, type=str, required=True)
     hm.add_argument("--dry-run", action="store_true"); hm.add_argument("--forcar", action="store_true")
-    hm.add_argument("--sem-historico", action="store_true", help="não compara com o histórico após salvar")
+    hm.add_argument("--com-historico", action="store_true", help="após salvar, compara com o histórico e o PEP")
+    hm.add_argument("--sem-historico", action="store_true", help="aceito por compatibilidade; o padrão já é não comparar")
     hm.add_argument("--dump-payload", help="grava o payload do save neste arquivo")
     cf = sp.add_parser("conferir",
                        help="só leitura: audita TODOS os exames liberados (status 40) do período")
@@ -5291,7 +5288,7 @@ def main():
         cmd_db_anexar(z, a.atendimento, a.exame, a.dry_run, a.substituir, a.chave, a.pedido, a.de, a.ate, a.salvar_pdf)
     else:
         cmd_gaso(z, a.atendimento, a, a.dry_run, a.forcar, a.dump_payload)
-    if a.cmd in ("resultado", "hemo", "gaso") and _HIST_SALVOS and not a.sem_historico:
+    if a.cmd in ("resultado", "hemo", "gaso") and _HIST_SALVOS and getattr(a, "com_historico", False):
         try:
             hist_pos_salvar(z, _HIST_SALVOS)
         except Exception as e:   # nunca bloqueia: o resultado já está salvo

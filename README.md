@@ -1,8 +1,8 @@
 # zion-tasy-cli
 
-> ⚠️ **Faça SÓ o que o usuário pediu.** Pedido para colocar em digitação = só o comando de digitação e a confirmação dos atendimentos movidos. Não rode conferir, historico, fila nem resumo de resultados/liberações do dia sem pedido explícito. A comparação com o histórico/PEP só acontece quando você digita/salva um resultado.
+> ⚠️ **Faça SÓ o que o usuário pediu.** Pedido para colocar em digitação = só o comando de digitação e a confirmação dos atendimentos movidos. Não rode conferir, historico, fila nem resumo de resultados/liberações do dia sem pedido explícito. A comparação com o histórico/PEP é a etapa 3, depois de digitar todos (`historico` / `lote conferir`), não no momento de salvar.
 
-> **Ordem do trabalho (em lote):** 1) colocar TODOS os atendimentos em digitação; 2) digitar os resultados de todos (use `--sem-historico` para ganhar tempo); 3) conferir todos com o PEP e com os resultados anteriores (`historico`); 4) liberar (`liberar`, um exame por vez) segundo a regra: **hemograma (HC), gasometria e bioquímica** dentro da referência podem ser liberados mesmo sem histórico/PEP; se estiverem fora da referência ou incoerentes, ficam só digitados. **Testes rápidos e tipagens** (HIV, VDRL, TRS/sífilis, hepatites TR, outros TR, GP-TIP/tipagem/fator Rh, COOI/Coombs) só liberam com resultado anterior igual ou com confirmação no PEP (`pep_ok`: a IA atesta que leu o trecho). Vale também para NÃO REAGENTE/Negativo. Sem confirmação: classe `PEP_A_CONFIRMAR`, não liberar. Exame externo, sem resultado ou fora de Digitação nunca libera. Para vários atendimentos use os comandos em lote (veja **Trabalho em lote**: `lote digitacao/digitar/conferir/liberar ARQ`). Nunca faça um atendimento inteiro de cada vez. Quando o usuário pede só uma etapa, faça só aquela etapa.
+> **Ordem do trabalho (em lote):** 1) colocar TODOS os atendimentos em digitação; 2) digitar os resultados de todos (só salvar, rápido, sem histórico/PEP; `resultado`/`hemo`/`gaso` ou `lote digitar`); 3) conferir todos com o PEP e com os resultados anteriores (`historico` / `lote conferir`); 4) liberar (`liberar`, um exame por vez) segundo a regra: **hemograma (HC), gasometria e bioquímica** dentro da referência podem ser liberados mesmo sem histórico/PEP; se estiverem fora da referência ou incoerentes, ficam só digitados. **Testes rápidos e tipagens** (HIV, VDRL, TRS/sífilis, hepatites TR, outros TR, GP-TIP/tipagem/fator Rh, COOI/Coombs) só liberam com resultado anterior igual ou com confirmação no PEP (`pep_ok`: a IA atesta que leu o trecho). Vale também para NÃO REAGENTE/Negativo. Sem confirmação: classe `PEP_A_CONFIRMAR`, não liberar. Exame externo, sem resultado ou fora de Digitação nunca libera. Para vários atendimentos use os comandos em lote (veja **Trabalho em lote**: `lote digitacao/digitar/conferir/liberar ARQ`). Nunca faça um atendimento inteiro de cada vez. Quando o usuário pede só uma etapa, faça só aquela etapa.
 
 ## 🔐 Login: a IA pode fazer pela pessoa
 
@@ -149,8 +149,8 @@ python3 zion.py conferir --at 123456
 python3 zion.py conferir --json
 ```
 
-### `resultado AT --exame SIGLA=valor [...] [--dry-run] [--forcar] [--dump-payload ARQ]`
-Digita exames por sigla (a sigla do exame no Tasy: `NA+`, `K+`, `CREA`, `UREA`, `TGO`, `TGP`, `PCRP`, `FAL`, `P+`, `MG+`, `CA+`, `DTRIG`, `AURS`, `LDH`...).
+### `resultado AT --exame SIGLA=valor [...] [--dry-run] [--forcar] [--com-historico] [--dump-payload ARQ]`
+Digita exames por sigla (a sigla do exame no Tasy: `NA+`, `K+`, `CREA`, `UREA`, `TGO`, `TGP`, `PCRP`, `FAL`, `P+`, `MG+`, `CA+`, `DTRIG`, `AURS`, `LDH`...). Só salva. Por padrão **não** compara com o histórico/PEP (isso é a etapa 3: `historico` / `lote conferir`). `--com-historico` liga a comparação neste comando; `--sem-historico` é aceito e não faz nada.
 
 - **Campo único:** `--exame CREA=0.51`
 - **Campos DV** (ex.: TGO, TGP, AURS): mesmo formato, o CLI cuida do envio como texto. A tela do Tasy mostra com ponto (5.01), é só exibição.
@@ -186,8 +186,8 @@ python3 zion.py resultado 123456 --exame UREA=30 --exame CREA=0.43 --exame TGO=5
   --exame TGP=59.2 --exame BILI.total=0.73 --exame BILI.direta=0.21 --exame PCRP=14.3 --dry-run
 ```
 
-### `gaso AT [--ph --pco2 --po2 --hco3 --be --so2 --hb --hct --na --k --ica --cl --glu --lac --bil] [--obs TEXTO] [--dry-run] [--forcar]`
-Digita a **gasometria** (venosa/arterial: GASV, GASA, GASO...) e, junto, a **bioquímica equivalente** que existir na prescrição:
+### `gaso AT [--ph --pco2 --po2 --hco3 --be --so2 --hb --hct --na --k --ica --cl --glu --lac --bil] [--obs TEXTO] [--dry-run] [--forcar] [--com-historico]`
+Digita e salva a **gasometria** (venosa/arterial: GASV, GASA, GASO...) e, junto, a **bioquímica equivalente** que existir na prescrição, sem histórico/PEP (mesmas flags `--com-historico` / `--sem-historico` do `resultado`):
 
 | Opção | Bioquímica equivalente |
 |---|---|
@@ -204,8 +204,8 @@ python3 zion.py gaso 123456 --ph 7.458 --pco2 36.9 --po2 52.4 --hco3 26.4 --be 2
   --na 136.1 --k 5.13 --ica 1.14 --cl 97.2 --glu 171 --lac 2.5 --dry-run
 ```
 
-### `hemo AT --rbc --hgb --hct --vcm --hcm --chcm --rdw --wbc --neu --lym --mon --eos --bas --plt --vpm [--dry-run] [--forcar]`
-Digita o **Hemograma Completo** com os valores **exatamente como no impresso do analisador**:
+### `hemo AT --rbc --hgb --hct --vcm --hcm --chcm --rdw --wbc --neu --lym --mon --eos --bas --plt --vpm [--dry-run] [--forcar] [--com-historico]`
+Digita e salva o **Hemograma Completo** com os valores **exatamente como no impresso do analisador**, sem histórico/PEP (mesmas flags `--com-historico` / `--sem-historico` do `resultado`):
 
 **Regra obrigatória do hemograma (automática no `hemo`):** Eosinófilos ≥ 1% sempre; se Leucócitos Totais > 10.000, também Bastonetes ≥ 1%. Os pontos acrescentados saem do maior percentual (normalmente segmentados) e o Total porcentagem Leucograma fica em 100. O CLI imprime o ajuste feito.
 
@@ -259,7 +259,7 @@ python3 zion.py conferir --at 100001 100002              # leitura: liberados (s
 ```
 ```bash
 python3 zion.py lote digitacao lote.json [--dry-run]   # 1) todos em Digitação
-python3 zion.py lote digitar   lote.json [--dry-run]   # 2) salva tudo (sem histórico; resultado → hemo → gaso por atendimento)
+python3 zion.py lote digitar   lote.json [--dry-run]   # 2) só salva, sem histórico/PEP (resultado → hemo → gaso por atendimento)
 python3 zion.py lote conferir  lote.json               # 3) só leitura: classifica cada exame
 python3 zion.py lote liberar   lote.json [--dry-run]   # 4) libera só os liberáveis, UM exame por vez
 ```
@@ -283,8 +283,10 @@ Siglas (listas em `zion.py`: `SIGLAS_TR_TIPAGEM`, `SIGLAS_HEMO`, `GASO_SIGLAS`, 
 ## Histórico do paciente (só leitura) — `historico`
 
 Todo resultado digitado (normal **ou** alterado, qualquer exame) deve ser comparado com os
-resultados anteriores do paciente e com a evolução clínica antes de reportar. O CLI faz isso
-sozinho depois de `resultado`, `hemo` e `gaso`, e também no `conferir`.
+resultados anteriores do paciente e com a evolução clínica **na etapa 3**, depois de digitar
+todos os atendimentos. Use `historico` ou `lote conferir`. O `conferir` (liberados, status 40)
+também compara. `resultado`, `hemo` e `gaso` **só salvam**; a comparação depois do save só
+roda com `--com-historico`.
 
 ### `historico AT [AT ...] [--exame SIGLA ...] [--dias 90] [--notas 1] [--json]`
 - Só leitura: nada é salvo, aprovado ou liberado.
@@ -317,11 +319,12 @@ Fontes no Tasy (descobertas nos bundles da tela, sem HAR):
   `AVISO: sem evolução clínica compatível` e o exame entra no resumo.
 
 ### Depois de salvar (`resultado`, `hemo`, `gaso`)
-- Após cada save bem-sucedido o CLI imprime uma comparação compacta por exame salvo.
-- **Nunca bloqueia nem pula o save:** sem resultado anterior ou sem evolução compatível, o
-  resultado é salvo normalmente e sai `AVISO: sem resultado anterior` /
-  `AVISO: sem evolução clínica compatível`, mais o resumo final listando esses exames.
-- `--sem-historico` desliga a comparação. Em `--dry-run` não há comparação (nada foi salvo).
+- O padrão é **não** comparar com o histórico/PEP depois de salvar (a etapa 2 tem que ser rápida).
+- `--com-historico` liga a comparação compacta por exame salvo (mesmos avisos de `historico`).
+  **Nunca bloqueia nem pula o save.**
+- `--sem-historico` é aceito por compatibilidade e não faz nada (o padrão já é não comparar).
+- Em `--dry-run` não há comparação (nada foi salvo). A conferência de um lote é a etapa 3
+  (`historico` / `lote conferir`), depois que todos foram digitados.
 
 ### No `conferir`
 - Cada exame liberado ganha a mesma comparação (só os campos com histórico ou alerta) e o resumo no fim.
@@ -397,6 +400,7 @@ Leia [`AGENTS.md`](AGENTS.md).
 ## Velocidade / perfil de tempo
 - Cada chamada ao Tasy leva ~0,15–0,4 s (latência do servidor); o tempo total é quase só a soma das chamadas em sequência.
 - Leituras (`ler`, `historico`, conferência do lote) abrem as telas das prescrições, fazem os `WResultEntry/build`, as séries anteriores e os dados de prescrições antigas **em paralelo** (até 4; `ZION_BUILD_WORKERS=1` desliga). Gravações (`digitacao`, `resultado`, `hemo`, `gaso`, `liberar`) continuam sequenciais, igual ao navegador.
+- `resultado`/`hemo`/`gaso` não disparam histórico/PEP depois de salvar (isso era o que mais atrasava a digitação). A conferência fica na etapa 3. No abrir/clicar/salvar, o CLI também deixa de fazer chamadas só de UI cujo retorno não era usado (obterPropriedades, árvore vazia, executeQuery de refresh); o payload gravado e a releitura via `build` permanecem iguais.
 - `ZION_TIMING=1 python3 zion.py ...` imprime no fim (stderr) as requisições HTTP somadas por serviço (contagem, média, máximo). Use para achar gargalos. Não mostra dados de paciente.
 - Gargalos conhecidos: `digitacao` (~20 chamadas por amostra e etapa, sequenciais), `liberar` (`generatePdfService` ~1,4 s por exame) e `historico` sem série no gráfico (abre prescrições liberadas antigas).
 - PEP x teste qualitativo: a tipagem escrita na nota ("TS O POSITIVO", "Rh negativo") é ignorada ao procurar POSITIVO/NEGATIVO de teste rápido, e "NR" isolado conta como não reagente. Campos ABO/Rh não entram nessa checagem de polaridade.
