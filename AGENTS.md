@@ -1,5 +1,7 @@
 # Guia para agentes de IA — zion-tasy-cli
 
+> ⚠️ **Faça SÓ o que o usuário pediu.** Pedido para colocar em digitação = só o comando de digitação e a confirmação dos atendimentos movidos. Não rode conferir, historico, fila nem resumo de resultados/liberações do dia sem pedido explícito. A comparação com o histórico/PEP só acontece quando você digita/salva um resultado.
+
 ## 🔐 Login: a IA pode fazer pela pessoa
 
 - A pessoa pode mandar o **usuário e a senha direto no chat** da IA. Não precisa de formulário nem campo seguro.
