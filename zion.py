@@ -29,7 +29,8 @@ Precedência: flags/env (ZION_USER, ZION_PASSWORD) > arquivo salvo > prompt.
 Sessão: session.json no mesmo diretório de config; renova/reloga sozinho.
 Senha nunca é impressa.
 """
-import argparse, copy, difflib, getpass, json, os, re, sys, time, datetime as dt
+import argparse, contextlib, copy, difflib, getpass, json, os, re, subprocess, sys, time, datetime as dt
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
 DEFAULT_URL = "https://sbsj.zion-srv.com"
@@ -286,13 +287,45 @@ class Zion:
         d = os.path.dirname(SESSION_FILE)
         if d:
             os.makedirs(d, mode=0o700, exist_ok=True)
-        fd = os.open(SESSION_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        # escrita atômica (tmp + rename): processos em paralelo nunca leem arquivo pela metade
+        tmp = f"{SESSION_FILE}.{os.getpid()}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump(self.sess, f)
         try:
-            os.chmod(SESSION_FILE, 0o600)
+            os.chmod(tmp, 0o600)
         except OSError:
             pass
+        os.replace(tmp, SESSION_FILE)
+
+    @contextlib.contextmanager
+    def _sess_lock(self):
+        """Trava entre processos (comandos em lote) para renovar/logar uma vez só."""
+        d = os.path.dirname(SESSION_FILE)
+        if d:
+            os.makedirs(d, mode=0o700, exist_ok=True)
+        f = open(SESSION_FILE + ".lock", "a+")
+        try:
+            try:
+                import fcntl
+                fcntl.flock(f, fcntl.LOCK_EX)
+            except ImportError:
+                pass
+            yield
+        finally:
+            f.close()
+
+    def _reload_if_newer(self):
+        """Se outro processo já renovou/logou, usa a sessão gravada em disco em vez de renovar de novo."""
+        try:
+            disk = json.load(open(SESSION_FILE))
+        except Exception:
+            return False
+        if disk.get("access_token") and disk.get("access_token") != self.sess.get("access_token") \
+                and disk.get("access_exp", 0) >= self.sess.get("access_exp", 0):
+            self.sess = disk; self._apply()
+            return True
+        return False
 
     def _apply(self):
         self.s.headers["Authorization"] = "Bearer " + self.sess["access_token"]
@@ -441,10 +474,18 @@ class Zion:
             except Exception:
                 self.sess = {}
         now = time.time()
-        if not self.sess or now > self.sess.get("refresh_exp", 0) - 60:
-            return self.login()
-        if now > self.sess.get("access_exp", 0) - 60 and not self.refresh():
-            return self.login()
+        precisa = (not self.sess or now > self.sess.get("refresh_exp", 0) - 60
+                   or now > self.sess.get("access_exp", 0) - 60)
+        if not precisa:
+            return
+        # sessão salva vencida: renova (ou loga) sob trava, para comandos em paralelo não logarem cada um
+        with self._sess_lock():
+            self._reload_if_newer()
+            now = time.time()
+            if not self.sess or now > self.sess.get("refresh_exp", 0) - 60:
+                return self.login()
+            if now > self.sess.get("access_exp", 0) - 60 and not self.refresh():
+                return self.login()
 
     # ---------- chamadas ----------
     def post(self, path, body, feature=True, _retry=True, feat=None):
@@ -453,8 +494,9 @@ class Zion:
         self.ncalls += 1
         r = self.s.post(API + "/service/" + path, json=body, headers=h, timeout=90)
         if r.status_code in (401, 403) and _retry:
-            if not self.refresh():
-                self.login()
+            with self._sess_lock():
+                if not self._reload_if_newer() and not self.refresh():
+                    self.login()
             return self.post(path, body, feature, _retry=False, feat=feat)
         if r.status_code != 200:
             raise RuntimeError(f"{path}: HTTP {r.status_code} {r.text[:300]}")
@@ -3045,6 +3087,15 @@ HIST_GRUPOS = {
                    "nomes": ("glicose", "glicemia", "hemoglobina glicada"),
                    "palavras": ("GLICEMIA", "INSULINA", "HIPOGLICEMIA", "HIPERGLICEMIA", "DIABETES", "DM", "HGT",
                                 "DIETA", "NPT", "JEJUM")},
+    "sorologia": {"exames": ("HIV", "VDRL", "TRS", "TRSIF", "HBSAG", "HCV", "ANTIHCV", "TRTOXO", "TOXG", "TOXM", "TRHBS", "TRHCV"),
+                  "nomes": ("hiv", "vdrl", "sifilis", "sífilis", "treponem", "hepatite", "hbsag", "hcv", "toxoplasm"),
+                  "palavras": ("HIV", "VDRL", "SIFILIS", "TREPONEMA", "TESTE RAPIDO", "TESTES RAPIDOS", "SOROLOGIA", "SOROLOGIAS",
+                               "HBSAG", "HEPATITE", "HCV", "TOXO", "TOXOPLASMOSE", "PRE-NATAL", "PRE NATAL", "PRENATAL")},
+    "imunohemato": {"exames": ("GP-TIP", "TIP", "ABO", "COOI", "COOD", "CI", "CD"),
+                    "nomes": ("tipagem", "coombs", "grupo sangu", "fator rh"),
+                    "palavras": ("TS", "TIPAGEM", "TIPO SANGUINEO", "FATOR RH", "RH", "ABO", "COOMBS", "ISOIMUNIZACAO",
+                                 "IMUNOGLOBULINA ANTI-D", "RHOGAM", "O POSITIVO", "O NEGATIVO", "A POSITIVO", "A NEGATIVO",
+                                 "B POSITIVO", "B NEGATIVO", "AB POSITIVO", "AB NEGATIVO")},
 }
 _HIST_SALVOS = []      # (Resultado, item, ResultVO relido) de cada save ok nesta execução
 
@@ -4209,6 +4260,511 @@ def cmd_db_login(cpf=None, password_stdin=False, serv_sol=None, otp=None):
     print(f"Credenciais do portal DB salvas em {db_creds_path()} (permissão 600).")
 
 
+# =====================================================================
+# ---------- Trabalho em lote: vários atendimentos em paralelo ----------
+# Cada atendimento roda num subprocesso próprio deste mesmo zion.py (sessão
+# própria carregada do session.json salvo; renovação/login sob trava de arquivo).
+# A saída de cada atendimento é capturada e impressa em bloco, nunca intercalada.
+# =====================================================================
+LOTE_WORKERS = 4
+LOTE_TIMEOUT = 20 * 60           # s por atendimento
+LOTE_CONF_VALIDADE_MIN = 60      # conferência mais velha que isto não serve para liberar
+_PRINT_LOCK = __import__("threading").Lock()
+
+
+def preparar_sessao(z):
+    """Garante UMA sessão válida antes de abrir os workers (login só se a salva expirou)."""
+    z.ensure()
+    if time.time() > z.sess.get("access_exp", 0) - 300:   # pouco tempo de token: renova já, uma vez
+        with z._sess_lock():
+            if not z._reload_if_newer() and not z.refresh():
+                z.login()
+    # sonda barata: token válido mas sessão encerrada no servidor (outro login) -> avisa uma vez, sem logar sozinho
+    try:
+        r = z.s.get(API + "/user/data", timeout=30)
+    except Exception:
+        return
+    if r.status_code in (401, 403):
+        if z.refresh() and z.s.get(API + "/user/data", timeout=30).status_code not in (401, 403):
+            return
+        sys.exit("A sessão salva do Tasy foi encerrada no servidor (provável login em outro lugar). "
+                 "Rode `python3 zion.py login` (isso derruba a outra sessão aberta) e repita o comando em lote.")
+
+
+def _argv_base(cli_user=None):
+    a = [sys.executable, os.path.abspath(__file__)]
+    if cli_user:
+        a += ["--user", cli_user]
+    return a
+
+
+def _rodar_job(chave, cmds, cli_user=None):
+    """cmds: lista de argv (sem o python/zion.py) rodados em sequência para UM atendimento."""
+    t0 = time.time(); out, err, rcs = [], [], []
+    env = dict(os.environ, PYTHONUNBUFFERED="1")
+    for argv in cmds:
+        try:
+            p = subprocess.run(_argv_base(cli_user) + [str(x) for x in argv], capture_output=True, text=True,
+                               timeout=LOTE_TIMEOUT, env=env, stdin=subprocess.DEVNULL)
+            out.append(p.stdout); err.append(p.stderr); rcs.append(p.returncode)
+        except subprocess.TimeoutExpired as e:
+            out.append((e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or ""))
+            err.append(f"TEMPO ESGOTADO ({LOTE_TIMEOUT}s) em: {' '.join(map(str, argv))}\n"); rcs.append(124)
+        except Exception as e:
+            out.append(""); err.append(f"ERRO ao iniciar {' '.join(map(str, argv))}: {e}\n"); rcs.append(1)
+    return {"chave": chave, "rc": max(rcs) if rcs else 0, "rcs": rcs, "out": "".join(out), "err": "".join(err),
+            "seg": time.time() - t0}
+
+
+def _ultima_linha(txt):
+    ls = [l.strip() for l in (txt or "").splitlines() if l.strip()]
+    return ls[-1][:160] if ls else ""
+
+
+def rodar_paralelo(jobs, workers=LOTE_WORKERS, cli_user=None, imprimir=True, rotulo="AT"):
+    """jobs: [(chave, [argv, ...])]. Imprime cada atendimento em bloco ao terminar. Devolve {chave: res}."""
+    res = {}
+    workers = max(1, min(int(workers or LOTE_WORKERS), len(jobs) or 1))
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(_rodar_job, k, cmds, cli_user): k for k, cmds in jobs}
+        for f in as_completed(futs):
+            k = futs[f]
+            try:
+                r = f.result()
+            except Exception as e:   # nunca derruba os outros
+                r = {"chave": k, "rc": 1, "rcs": [1], "out": "", "err": f"ERRO: {e}\n", "seg": 0.0}
+            res[k] = r
+            if imprimir:
+                with _PRINT_LOCK:
+                    st = "ok" if r["rc"] == 0 else f"FALHOU (código {r['rc']})"
+                    print(f"\n{'=' * 22} {rotulo} {k} — {st} — {r['seg']:.1f}s {'=' * 22}", flush=True)
+                    if r["out"].strip():
+                        print(r["out"].rstrip(), flush=True)
+                    e_txt = "\n".join(l for l in r["err"].splitlines() if l.strip())
+                    if e_txt:
+                        print("[stderr] " + e_txt.replace("\n", "\n[stderr] "), flush=True)
+    res["_total_seg"] = time.time() - t0
+    res["_workers"] = workers
+    return res
+
+
+def resumo_paralelo(res, chaves, titulo, linha=None):
+    print(f"\n## Resumo — {titulo} ({len(chaves)} atendimento(s), {res.get('_workers')} em paralelo, "
+          f"{res.get('_total_seg', 0):.1f}s no total; soma sequencial {sum(res[k]['seg'] for k in chaves if k in res):.1f}s)")
+    ok = [k for k in chaves if k in res and res[k]["rc"] == 0]
+    bad = [k for k in chaves if k not in res or res[k]["rc"] != 0]
+    for k in chaves:
+        r = res.get(k)
+        if not r:
+            print(f"  AT {k}: não rodou"); continue
+        txt = linha(r) if linha else _ultima_linha(r["out"])
+        if r["rc"] != 0:
+            txt = f"FALHOU: {_ultima_linha(r['err']) or txt}"
+        print(f"  AT {k}: {txt} ({r['seg']:.1f}s)")
+    print(f"  OK: {len(ok)} | falhas: {len(bad)}" + (f" ({', '.join(map(str, bad))})" if bad else ""))
+    return ok, bad
+
+
+def cmd_multi(z, a, comando, atends):
+    """ler / historico / digitacao / conferir com vários atendimentos (paralelo, saída agrupada)."""
+    atends = list(dict.fromkeys(int(x) for x in atends))
+    jobs = []
+    for at in atends:
+        if comando == "ler":
+            argv = ["ler", at]
+        elif comando == "historico":
+            argv = ["historico", at, "--dias", a.dias, "--notas", a.notas] + [x for e in (a.exame or []) for x in ("--exame", e)]
+            if a.as_json:
+                argv.append("--json")
+        elif comando == "digitacao":
+            argv = ["digitacao", at] + (["--dry-run"] if a.dry_run else []) + (["--desde", a.desde] if a.desde else [])
+            argv += (["--de", a.de] if a.de else []) + (["--ate", a.ate] if a.ate else [])
+        elif comando == "conferir":
+            argv = ["conferir", "--at", at, "--dias", a.dias] + (["--de", a.de] if a.de else []) + (["--ate", a.ate] if a.ate else [])
+            argv += (["--json"] if a.as_json else []) + (["--sem-historico"] if a.sem_historico else [])
+        else:
+            raise ValueError(comando)
+        jobs.append((at, [argv]))
+    preparar_sessao(z)
+    print(f"{comando.upper()} EM LOTE — {len(atends)} atendimento(s), até {min(a.workers, len(atends))} em paralelo"
+          + (" (dry-run: nada é enviado)" if getattr(a, "dry_run", False) else ""))
+    res = rodar_paralelo(jobs, a.workers, a.cli_user)
+
+    def linha(r):
+        o = r["out"]
+        if comando == "digitacao":
+            m = re.findall(r"^(Total: .*|Nada a fazer.*|Nenhuma linha encontrada.*)$", o, re.M)
+            return m[-1] if m else _ultima_linha(o)
+        if comando == "ler":
+            n = len(re.findall(r"^\s{2}\S+\s+seq ", o, re.M))
+            return f"{n} exame(s) lido(s)" if n else _ultima_linha(o)
+        if comando == "historico":
+            m = re.findall(r"^\s*(Sem resultado anterior:.*|Mudança grande.*)$", o, re.M)
+            return " | ".join(m) if m else _ultima_linha(o)
+        return _ultima_linha(o)
+    ok, bad = resumo_paralelo(res, atends, comando, linha)
+    if bad:
+        raise SystemExit(1)
+
+
+# ---------- arquivo de lote ----------
+HEMO_OPTS = ("rbc", "hgb", "hct", "vcm", "hcm", "chcm", "rdw", "wbc", "neu", "lym", "mon", "eos", "bas", "plt", "vpm")
+
+
+def ler_lote(path):
+    """JSON (ou YAML, se PyYAML estiver instalado). Formato:
+    {"atendimentos": [{"at": 123, "exames": ["TGO=20.7", "BILI.total=0.64"],
+                       "hemo": {"rbc": "4.5", ...}, "gaso": {"ph": "7.35", ..., "obs": "..."},
+                       "forcar": false, "pep_ok": ["HIV"]}]}"""
+    txt = open(path, encoding="utf-8").read()
+    if path.lower().endswith((".yml", ".yaml")):
+        try:
+            import yaml
+        except ImportError:
+            sys.exit("Arquivo YAML precisa do PyYAML (pip install pyyaml) — ou use JSON.")
+        d = yaml.safe_load(txt)
+    else:
+        d = json.loads(txt)
+    lista = d if isinstance(d, list) else (d or {}).get("atendimentos")
+    if not isinstance(lista, list) or not lista:
+        sys.exit(f"{path}: esperava {{\"atendimentos\": [...]}} com pelo menos um atendimento")
+    gaso_ok = {o for _, o, _ in GASO_FIELDS} | {"obs"}
+    out, vistos, erros = [], set(), []
+    for i, e in enumerate(lista, 1):
+        if not isinstance(e, dict):
+            erros.append(f"item {i}: não é objeto"); continue
+        try:
+            at = int(e.get("at") or e.get("atendimento"))
+        except (TypeError, ValueError):
+            erros.append(f"item {i}: falta 'at' (número do atendimento)"); continue
+        if at in vistos:
+            erros.append(f"item {i}: atendimento repetido"); continue
+        vistos.add(at)
+        ex = e.get("exames") or []
+        if isinstance(ex, dict):
+            ex = [f"{k}={v}" for k, v in ex.items()]
+        ex = [str(x).strip() for x in ex]
+        for x in ex:
+            if "=" not in x:
+                erros.append(f"AT {at}: exame {x!r} sem '=' (use SIGLA=valor ou SIGLA.campo=valor)")
+        hemo = e.get("hemo") or None
+        if hemo:
+            hemo = {str(k).lower(): str(v) for k, v in hemo.items()}
+            falta = [o for o in HEMO_OPTS if o not in hemo]; sobra = [k for k in hemo if k not in HEMO_OPTS]
+            if falta or sobra:
+                erros.append(f"AT {at}: hemo " + (f"faltando {falta} " if falta else "") + (f"desconhecido {sobra}" if sobra else ""))
+        gaso = e.get("gaso") or None
+        if gaso:
+            gaso = {str(k).lower(): str(v) for k, v in gaso.items()}
+            sobra = [k for k in gaso if k not in gaso_ok]
+            if sobra:
+                erros.append(f"AT {at}: gaso campo desconhecido {sobra} (aceitos: {', '.join(sorted(gaso_ok))})")
+        out.append({"at": at, "exames": ex, "hemo": hemo, "gaso": gaso, "forcar": bool(e.get("forcar")),
+                    "pep_ok": [str(x).upper().strip() for x in (e.get("pep_ok") or [])]})
+    if erros:
+        sys.exit("Arquivo de lote inválido:\n  " + "\n  ".join(erros))
+    return out
+
+
+def _siglas_lote(e):
+    """Siglas que o arquivo cobre para este atendimento (para conferir/liberar)."""
+    s = [x.split("=", 1)[0].split(".", 1)[0].strip().upper() for x in e["exames"]]
+    if e["hemo"]:
+        s.append(HEMO_SIGLA)
+    if e["gaso"]:
+        s.append("@GASO")
+    return list(dict.fromkeys(s))
+
+
+def conf_path(path):
+    return path + ".conferencia.json"
+
+
+_ALERTA_DIGITAR = ("VERIFICAR", "DIVERGÊNCIA", "não lançado", "não existe em Digitação", "não está em Digitação",
+                   "não sobrescrevi", "falhou", "ERRO", "Traceback", "bloqueado", "AVISO", "abortado", "ignorado")
+
+
+def lote_digitacao(z, a, itens):
+    jobs = [(e["at"], [["digitacao", e["at"]] + (["--dry-run"] if a.dry_run else [])]) for e in itens]
+    preparar_sessao(z)
+    print(f"LOTE etapa 1 — colocar em Digitação: {len(jobs)} atendimento(s)" + (" (dry-run)" if a.dry_run else ""))
+    res = rodar_paralelo(jobs, a.workers, a.cli_user)
+    def linha(r):
+        m = re.findall(r"^(Total: .*|Nada a fazer.*|Nenhuma linha encontrada.*)$", r["out"], re.M)
+        return m[-1] if m else _ultima_linha(r["out"])
+    return resumo_paralelo(res, [e["at"] for e in itens], "etapa 1: em Digitação", linha)
+
+
+def lote_digitar(z, a, itens):
+    jobs = []
+    for e in itens:
+        cmds, extra = [], (["--dry-run"] if a.dry_run else []) + (["--forcar"] if e["forcar"] else []) + ["--sem-historico"]
+        if e["exames"]:
+            cmds.append(["resultado", e["at"]] + [x for v in e["exames"] for x in ("--exame", v)] + extra)
+        if e["hemo"]:
+            cmds.append(["hemo", e["at"]] + [x for o in HEMO_OPTS for x in ("--" + o, e["hemo"][o])] + extra)
+        if e["gaso"]:
+            cmds.append(["gaso", e["at"]] + [x for k, v in e["gaso"].items() for x in ("--" + k, v)] + extra)
+        if cmds:
+            jobs.append((e["at"], cmds))
+    if not jobs:
+        print("Nada para digitar no arquivo."); return [], []
+    preparar_sessao(z)
+    print(f"LOTE etapa 2 — digitar resultados (sem histórico; conferência é a etapa 3): {len(jobs)} atendimento(s)"
+          + (" (dry-run: nada é enviado)" if a.dry_run else ""))
+    res = rodar_paralelo(jobs, a.workers, a.cli_user)
+    def linha(r):
+        alertas = [l.strip() for l in r["out"].splitlines() if any(w in l for w in _ALERTA_DIGITAR)]
+        salvos = len(re.findall(r": salvo ", r["out"])) + len(re.findall(r"\[dry-run\]", r["out"]))
+        return (f"{salvos} exame(s) {'simulado(s)' if a.dry_run else 'salvo(s) e relido(s) ok'}"
+                + (f" | ATENÇÃO: {' / '.join(x[:110] for x in alertas[:4])}" if alertas else ""))
+    return resumo_paralelo(res, [k for k, _ in jobs], "etapa 2: digitar", linha)
+
+
+# --- conferência (etapa 3): uma execução interna por atendimento ---
+_NEUTROS = ("naoreagente", "negativo", "negativa", "ausente", "ausentes", "naodetectado", "naodetectavel", "normal")
+_POSITIVOS = ("reagente", "positivo", "positiva", "presente", "detectado", "detectavel")
+
+
+def _ref_fora(vo):
+    """Campos fora da referência do próprio exame (qtMinima/qtMaxima, prMinimo/prMaximo, dsReferencia)."""
+    fora = []
+    for x in vo.get("subExams") or []:
+        nm = (x.get("nmExame") or "").strip(); sl = _slug(nm)
+        if not nm or sl.startswith(("observ", "idade")) or x.get("visible") is False and x.get("lineNumber") is None:
+            continue
+        v = sub_val(x)
+        if v in (None, ""):
+            continue
+        fmt = x.get("ieFormatoResultado")
+        if isinstance(v, float):
+            if fmt == "P" and (x.get("prMinimo") is not None or x.get("prMaximo") is not None):
+                lo, hi = _num_or_none(x.get("prMinimo")), _num_or_none(x.get("prMaximo"))
+            else:
+                lo, hi = _num_or_none(x.get("qtMinima")), _num_or_none(x.get("qtMaxima"))
+            if not lo and not hi:
+                continue
+            if (lo is not None and lo != 0 and v < lo) or (hi and v > hi):
+                fora.append(f"{nm} {vtxt(v)} fora de {vtxt(lo) if lo is not None else '-'}–{vtxt(hi) if hi else '-'}")
+        else:
+            vs, rs = _slug(v), _slug(x.get("dsReferencia") or "")
+            if "naorealizado" in vs or any(n in vs for n in _NEUTROS):
+                continue
+            if rs and any(n in rs for n in _NEUTROS) and any(p in vs for p in _POSITIVOS):
+                fora.append(f"{nm} {v} (referência: {x.get('dsReferencia')})")
+    return fora
+
+
+def conferir_at(z, atend, siglas=None, dias=HIST_DIAS_PADRAO, n_notas=20):
+    """Só leitura. Classifica cada exame em Digitação (30) com resultado salvo."""
+    siglas = [s.upper() for s in (siglas or [])]
+    data, telas = abrir_telas(z, atend, write=False)
+    alvos = []
+    for t in telas:
+        for it in sorted(t.items, key=lambda i: i["NR_SEQ_PRESCR"]):
+            cd = str(it.get("CD_EXAME") or "").upper()
+            if siglas and cd not in siglas and not ("@GASO" in siglas and cd in GASO_SIGLAS):
+                continue
+            alvos.append((t, it))
+    pf = next((str(n.get("CD_PESSOA_FISICA")) for t, it in alvos for (_g, n) in [t.nodes.get(it.get("NR_SEQ_PRESCR"), (None, {}))]
+               if n.get("CD_PESSOA_FISICA")), None)
+    notas, motivo_notas = (notas_clinicas(z, atend, n_notas, pf=pf) if alvos else ([], None))
+    def _medica(nt):
+        t_ = _sem_acento(f"{nt['tipo']} {nt['subtipo']}").upper()
+        return 0 if ("MEDIC" in t_ or "UTI" in t_) else 1
+    notas_ord = sorted(notas, key=lambda x: (_medica(x), -(x["dt"].timestamp() if x["dt"] else 0)))
+    cache, exames = {}, []
+    achadas = {(it.get("CD_EXAME") or "").upper() for _, it in alvos}
+    for s in siglas:
+        if s != "@GASO" and s not in achadas:
+            exames.append({"sigla": s, "classe": "NAO_ENCONTRADO", "motivo": "não está na digitação deste atendimento"})
+    for t, it in alvos:
+        cd = str(it.get("CD_EXAME") or "").upper(); seq = it["NR_SEQ_PRESCR"]
+        r = {"sigla": cd, "nome": (it.get("NM_EXAME") or "").strip(), "prescricao": t.nr, "seq": seq,
+             "status": it.get("IE_STATUS_ATEND")}
+        exames.append(r)
+        if exame_externo_bloqueado(it):
+            r.update(classe="EXTERNO", motivo="sorologia/exame externo (DB): só anexar PDF, nunca liberar pelo CLI"); continue
+        if it.get("IE_STATUS_ATEND") != 30 or seq not in t.nodes:
+            r.update(classe="FORA_DIGITACAO", motivo=f"status {it.get('IE_STATUS_ATEND')} (não está em Digitação)"); continue
+        vo = t.build(seq)["ResultVO"]
+        vals = [x for x in vo.get("subExams") or [] if sub_val(x) not in (None, 0, "")]
+        if not vals:
+            r.update(classe="SEM_RESULTADO", motivo="nenhum resultado salvo"); continue
+        r["valores"] = "; ".join(f"{(x.get('nmExame') or '').strip()}={vtxt(sub_val(x))}" for x in vals[:8])
+        fora = _ref_fora(vo)
+        r["fora_ref"] = fora
+        hist_ok, incoer, hist_txt = False, [], []
+        if any(x.get("ieFormatoResultado") in ("V", "DV", "P") for x in vo.get("subExams") or []):
+            try:
+                h = historico_exame(z, it, vo, atend, dias, cache, nr=t.nr)
+                for c in h["campos"]:
+                    if c["historico"] and c["atual"] is not None:
+                        ult = c["historico"][-1]
+                        hist_txt.append(f"{c['campo']}: {vtxt(c['atual'])} (último {vtxt(ult['valor'])} em {_fmt_d(ult['dt'])})")
+                    incoer += [f"{c['campo']}: {x}" for x in c["avisos"] if x.startswith("mudança") or "crítica" in x]
+                hist_ok = (not h["sem_historico"]) and any(c["historico"] and c["atual"] is not None for c in h["campos"])
+            except Exception as e:
+                r["hist_erro"] = str(e)
+        r["historico"] = hist_txt[:6]; r["incoerencias"] = incoer
+        g = hist_grupo(cd, r["nome"]); pep = []
+        if g:
+            for nt in notas_ord:
+                tr, _g = trecho_relevante(nt["texto"], None, grupo=g)
+                if tr:
+                    pep.append({"dt": _fmt_d(nt["dt"]), "tipo": nt["subtipo"] or nt["tipo"], "trecho": tr})
+                if len(pep) >= 2:
+                    break
+        r["pep"] = pep
+        if fora:
+            r.update(classe="FORA_REFERENCIA", motivo="fora da referência: " + "; ".join(fora[:4]))
+        elif incoer:
+            r.update(classe="INCOERENTE", motivo="incoerente com resultados anteriores: " + "; ".join(incoer[:4]))
+        elif hist_ok:
+            r.update(classe="COERENTE", motivo="dentro da referência e de acordo com resultados anteriores")
+        elif pep:
+            r.update(classe="PEP_A_CONFIRMAR", motivo="sem resultado anterior; há trecho no PEP — leia e, se bater, "
+                                                       "ponha a sigla em \"pep_ok\" deste atendimento no arquivo")
+        else:
+            r.update(classe="SEM_HISTORICO_PEP", motivo="sem resultado anterior e sem evolução compatível no PEP"
+                     + (f" ({motivo_notas})" if motivo_notas else ""))
+    return {"at": atend, "exames": exames, "notas_motivo": motivo_notas}
+
+
+def cmd_lote_conferir_at(z, atend, siglas, dias):
+    try:
+        d = conferir_at(z, atend, siglas, dias)
+    except SystemExit as e:
+        d = {"at": atend, "erro": str(e), "exames": []}
+    except Exception as e:
+        d = {"at": atend, "erro": f"{type(e).__name__}: {e}", "exames": []}
+    print("@@LOTE_JSON@@" + json.dumps(d, ensure_ascii=False, default=str))
+
+
+def lote_conferir(z, a, path, itens):
+    jobs = [(e["at"], [["_lote-conferir-at", e["at"], "--dias", a.dias] + [x for s in _siglas_lote(e) for x in ("--exame", s)]])
+            for e in itens]
+    preparar_sessao(z)
+    print(f"LOTE etapa 3 — conferir com resultados anteriores, PEP e referência (só leitura): {len(jobs)} atendimento(s)")
+    res = rodar_paralelo(jobs, a.workers, a.cli_user, imprimir=False)
+    conf = {"gerado_em": time.time(), "arquivo_mtime": os.path.getmtime(path), "atendimentos": {}}
+    for e in itens:
+        k = e["at"]; r = res.get(k) or {}
+        m = re.findall(r"^@@LOTE_JSON@@(.*)$", r.get("out", ""), re.M)
+        d = json.loads(m[-1]) if m else {"at": k, "erro": _ultima_linha(r.get("err")) or "sem saída", "exames": []}
+        conf["atendimentos"][str(k)] = d
+        print(f"\n{'=' * 22} AT {k} — {r.get('seg', 0):.1f}s {'=' * 22}")
+        if d.get("erro"):
+            print(f"  FALHA: {d['erro']}"); continue
+        for x in d["exames"]:
+            print(f"  {x['sigla']:<8} {x['classe']:<18} {x.get('valores', '')[:70]}")
+            print(f"           motivo: {x['motivo']}")
+            for hline in (x.get("historico") or [])[:3]:
+                print(f"           anterior: {hline}")
+            for p in (x.get("pep") or []):
+                print(f"           PEP {p['dt']} {p['tipo']}: {p['trecho'][:220]}")
+    cp = conf_path(path)
+    fd = os.open(cp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(conf, f, ensure_ascii=False, indent=1, default=str)
+    cont = {}
+    for d in conf["atendimentos"].values():
+        for x in d.get("exames", []):
+            cont[x["classe"]] = cont.get(x["classe"], 0) + 1
+    falhas = [k for k, d in conf["atendimentos"].items() if d.get("erro")]
+    print(f"\n## Resumo — etapa 3: conferir ({len(itens)} atendimento(s), {res.get('_total_seg', 0):.1f}s)")
+    print("  " + (" | ".join(f"{k}: {v}" for k, v in sorted(cont.items())) or "nenhum exame"))
+    if falhas:
+        print(f"  Falhas: {', '.join(falhas)}")
+    print(f"  Conferência gravada em {cp} (dados de paciente: arquivo local, permissão 600 — nunca commitar)")
+    print("  Etapa 4: `lote liberar` libera só COERENTE e PEP_A_CONFIRMAR que estiverem em \"pep_ok\".")
+    return conf
+
+
+def _liberaveis(d, pep_ok):
+    sim, nao = [], []
+    for x in d.get("exames", []):
+        if x["classe"] == "COERENTE" or (x["classe"] == "PEP_A_CONFIRMAR" and x["sigla"] in pep_ok):
+            sim.append(x)
+        else:
+            motivo = x["motivo"]
+            if x["classe"] == "PEP_A_CONFIRMAR":
+                motivo = "PEP a confirmar (sigla não está em pep_ok)"
+            nao.append((x, motivo))
+    return sim, nao
+
+
+def lote_liberar(z, a, path, itens):
+    cp = conf_path(path)
+    if not os.path.exists(cp):
+        sys.exit(f"Rode antes: python3 zion.py lote conferir {path}  (etapa 3; não libero sem conferência)")
+    conf = json.load(open(cp))
+    idade_min = (time.time() - conf.get("gerado_em", 0)) / 60
+    if idade_min > LOTE_CONF_VALIDADE_MIN:
+        sys.exit(f"Conferência de {idade_min:.0f} min atrás (> {LOTE_CONF_VALIDADE_MIN}). Rode `lote conferir` de novo.")
+    jobs, plano, nao_lib, falhas = [], {}, [], []
+    for e in itens:
+        d = conf["atendimentos"].get(str(e["at"]))
+        if d is None:
+            falhas.append((e["at"], "-", "atendimento não estava na conferência — rode `lote conferir` de novo")); continue
+        if d.get("erro"):
+            falhas.append((e["at"], "-", f"conferência falhou: {d['erro']}")); continue
+        sim, nao = _liberaveis(d, set(e["pep_ok"]))
+        nao_lib += [(e["at"], x["sigla"], m) for x, m in nao]
+        sim = [x for x in sim if x["sigla"] not in ("@GASO",)]
+        if sim:
+            plano[e["at"]] = sim
+            jobs.append((e["at"], [["liberar", e["at"]] + [y for x in sim for y in ("--exame", x["sigla"])] + (["--dry-run"] if a.dry_run else [])]))
+    print(f"LOTE etapa 4 — liberar UM exame por vez, só COERENTE/pep_ok, nunca sorologia externa: "
+          f"{sum(len(v) for v in plano.values())} exame(s) em {len(jobs)} atendimento(s)" + (" (dry-run: nada é enviado)" if a.dry_run else ""))
+    liberados = []
+    if jobs:
+        preparar_sessao(z)
+        res = rodar_paralelo(jobs, a.workers, a.cli_user)
+        for k, _ in jobs:
+            r = res.get(k) or {"out": "", "err": "não rodou", "rc": 1}
+            m = re.findall(r"^Resumo: (.*)$", r["out"], re.M)
+            got = {}
+            for part in (m[-1].split("; ") if m else []):
+                if ": " in part:
+                    s, v = part.split(": ", 1); got[s.strip().upper()] = v.strip()
+            for x in plano[k]:
+                v = got.get(x["sigla"])
+                if v and (v.startswith("liberado") or (a.dry_run and v == "dry-run")):
+                    liberados.append((k, x["sigla"], v))
+                elif v:
+                    falhas.append((k, x["sigla"], v))
+                else:
+                    falhas.append((k, x["sigla"], "não processado (liberar parou antes, ou erro: " + (_ultima_linha(r["err"]) or "ver saída") + ")"))
+    print("\n## Resumo único do lote")
+    print(f"  {'Simulados (dry-run)' if a.dry_run else 'Liberados'}: {len(liberados)}")
+    for k, s, v in liberados:
+        print(f"    AT {k} {s}: {v}")
+    print(f"  Digitados, NÃO liberados: {len(nao_lib)}")
+    for k, s, m in nao_lib:
+        print(f"    AT {k} {s}: {m}")
+    print(f"  Falhas: {len(falhas)}")
+    for k, s, m in falhas:
+        print(f"    AT {k} {s}: {m}")
+    if falhas:
+        raise SystemExit(1)
+
+
+def cmd_lote(z, a):
+    itens = ler_lote(a.arquivo)
+    if a.etapa == "digitacao":
+        ok, bad = lote_digitacao(z, a, itens)
+    elif a.etapa == "digitar":
+        ok, bad = lote_digitar(z, a, itens)
+    elif a.etapa == "conferir":
+        lote_conferir(z, a, a.arquivo, itens); return
+    elif a.etapa == "liberar":
+        lote_liberar(z, a, a.arquivo, itens); return
+    if bad:
+        raise SystemExit(1)
+
+
 def main():
     ap = argparse.ArgumentParser(prog="zion.py")
     ap.add_argument("--user", dest="cli_user", default=None,
@@ -4231,12 +4787,14 @@ def main():
     l.add_argument("--de", help="início DT_PRESCRICAO DD/MM/AAAA[ HH:MM]")
     l.add_argument("--ate", help="fim DT_PRESCRICAO DD/MM/AAAA[ HH:MM]")
     l.add_argument("--json", dest="as_json", action="store_true", help="saída JSON (inclui dt_prescricao)")
-    d = sp.add_parser("digitacao"); d.add_argument("atendimento", type=int)
+    d = sp.add_parser("digitacao", help="coloca em Digitação (status 30); aceita vários atendimentos (paralelo)")
+    d.add_argument("atendimento", type=int, nargs="+"); d.add_argument("-j", "--workers", type=int, default=LOTE_WORKERS, help="atendimentos em paralelo (padrão 4)")
     d.add_argument("--dry-run", action="store_true")
     d.add_argument("--desde", type=int, choices=[10, 20, 25, 26], help="(só dry-run) simula a partir deste status")
     d.add_argument("--de", help="início DT_PRESCRICAO DD/MM/AAAA[ HH:MM]")
     d.add_argument("--ate", help="fim DT_PRESCRICAO DD/MM/AAAA[ HH:MM]")
-    le = sp.add_parser("ler"); le.add_argument("atendimento", type=int)
+    le = sp.add_parser("ler", help="lê o que está em Digitação; aceita vários atendimentos (paralelo)")
+    le.add_argument("atendimento", type=int, nargs="+"); le.add_argument("-j", "--workers", type=int, default=LOTE_WORKERS, help="atendimentos em paralelo (padrão 4)")
     lb = sp.add_parser("liberar", help="aprova e libera UM exame por vez (só status 30 com resultado salvo; nunca sorologia externa; nunca Liberar todos)")
     lb.add_argument("atendimento", type=int)
     lb.add_argument("--exame", action="append", required=True, help="SIGLA do exame; repita para vários (liberados um de cada vez)")
@@ -4263,16 +4821,25 @@ def main():
                        help="só leitura: audita TODOS os exames liberados (status 40) do período")
     cf.add_argument("--de", help="início DT_PRESCRICAO DD/MM/AAAA[ HH:MM] (padrão: hoje 00:00:00)")
     cf.add_argument("--ate", help="fim DT_PRESCRICAO DD/MM/AAAA[ HH:MM] (padrão: agora)")
-    cf.add_argument("--at", dest="atendimento", type=int, help="filtra um atendimento")
+    cf.add_argument("--at", dest="atendimento", type=int, nargs="+", help="filtra atendimento(s); vários = paralelo"); cf.add_argument("-j", "--workers", type=int, default=LOTE_WORKERS, help="atendimentos em paralelo (padrão 4)")
     cf.add_argument("--json", dest="as_json", action="store_true", help="saída JSON")
     cf.add_argument("--sem-historico", action="store_true", help="não compara com resultados anteriores do paciente")
     cf.add_argument("--dias", type=int, default=HIST_DIAS_PADRAO, help="janela do histórico (padrão 90)")
     hi = sp.add_parser("historico", help="só leitura: resultados anteriores do paciente, tendência e Δ + evolução clínica")
-    hi.add_argument("atendimento", type=int)
+    hi.add_argument("atendimento", type=int, nargs="+"); hi.add_argument("-j", "--workers", type=int, default=LOTE_WORKERS, help="atendimentos em paralelo (padrão 4)")
     hi.add_argument("--exame", action="append", help="sigla do Tasy (repita): CREA, HC…; padrão: todos")
     hi.add_argument("--dias", type=int, default=HIST_DIAS_PADRAO, help="janela em dias (padrão 90)")
     hi.add_argument("--notas", type=int, default=1, help="nº de evoluções clínicas (padrão 1)")
     hi.add_argument("--json", dest="as_json", action="store_true")
+    lt = sp.add_parser("lote", help="arquivo de lote: digitacao → digitar → conferir → liberar, em paralelo entre atendimentos")
+    lt.add_argument("etapa", choices=["digitacao", "digitar", "conferir", "liberar"],
+                    help="digitacao=coloca em Digitação; digitar=salva resultados; conferir=histórico/PEP/referência; liberar=só COERENTES")
+    lt.add_argument("arquivo", help="JSON (ou YAML) com {\"atendimentos\": [...]}")
+    lt.add_argument("--dry-run", action="store_true", help="não envia nada (digitacao/digitar/liberar)")
+    lt.add_argument("--dias", type=int, default=HIST_DIAS_PADRAO, help="janela do histórico na conferência (padrão 90)"); lt.add_argument("-j", "--workers", type=int, default=LOTE_WORKERS, help="atendimentos em paralelo (padrão 4)")
+    li = sp.add_parser("_lote-conferir-at", help=argparse.SUPPRESS)
+    li.add_argument("atendimento", type=int); li.add_argument("--exame", action="append")
+    li.add_argument("--dias", type=int, default=HIST_DIAS_PADRAO)
     dl = sp.add_parser("db-login", help="valida e grava o acesso do portal DB Diagnósticos (E-DB), permissão 600")
     dl.add_argument("--cpf", help="CPF do usuário do portal DB (ou DB_CPF)")
     dl.add_argument("--password-stdin", action="store_true", help="lê a senha do stdin (ou DB_PASSWORD)")
@@ -4357,10 +4924,18 @@ def main():
         cmd_fila(z, a.status, a.exames, a.resumo, a.de, a.ate, a.as_json)
     elif a.cmd == "listar":
         cmd_listar(z, a.atendimento, a.de, a.ate, a.as_json)
+    elif a.cmd in ("digitacao", "ler", "historico") and len(set(a.atendimento)) > 1:
+        cmd_multi(z, a, a.cmd, a.atendimento)
+    elif a.cmd == "conferir" and a.atendimento and len(set(a.atendimento)) > 1:
+        cmd_multi(z, a, "conferir", a.atendimento)
+    elif a.cmd == "lote":
+        cmd_lote(z, a)
+    elif a.cmd == "_lote-conferir-at":
+        cmd_lote_conferir_at(z, a.atendimento, a.exame, a.dias)
     elif a.cmd == "digitacao":
-        cmd_digitacao(z, a.atendimento, a.dry_run, a.desde, a.de, a.ate)
+        cmd_digitacao(z, a.atendimento[0], a.dry_run, a.desde, a.de, a.ate)
     elif a.cmd == "ler":
-        cmd_ler(z, a.atendimento)
+        cmd_ler(z, a.atendimento[0])
     elif a.cmd == "liberar":
         cmd_liberar(z, a.atendimento, a.exame, a.dry_run)
     elif a.cmd == "resultado":
@@ -4368,9 +4943,9 @@ def main():
     elif a.cmd == "hemo":
         cmd_hemo(z, a.atendimento, a, a.dry_run, a.forcar, a.dump_payload)
     elif a.cmd == "conferir":
-        cmd_conferir(z, a.de, a.ate, a.atendimento, a.as_json, historico=not a.sem_historico, dias=a.dias)
+        cmd_conferir(z, a.de, a.ate, (a.atendimento or [None])[0], a.as_json, historico=not a.sem_historico, dias=a.dias)
     elif a.cmd == "historico":
-        cmd_historico(z, a.atendimento, a.exame, a.dias, a.notas, a.as_json)
+        cmd_historico(z, a.atendimento[0], a.exame, a.dias, a.notas, a.as_json)
     elif a.cmd == "db-buscar":
         cmd_db_buscar(z, a.atendimento, a.chave, a.pedido, a.de, a.ate, a.as_json)
     elif a.cmd == "db-anexar":

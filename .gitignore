@@ -9,3 +9,9 @@ credentials.json
 *.pdf
 db_credentials.json
 db_session.json
+
+# lote (dados de paciente)
+lote*.json
+lote*.yaml
+lote*.yml
+*.conferencia.json

@@ -2,7 +2,7 @@
 
 > ⚠️ **Faça SÓ o que o usuário pediu.** Pedido para colocar em digitação = só o comando de digitação e a confirmação dos atendimentos movidos. Não rode conferir, historico, fila nem resumo de resultados/liberações do dia sem pedido explícito. A comparação com o histórico/PEP só acontece quando você digita/salva um resultado.
 
-> **Ordem do trabalho (em lote):** 1) colocar TODOS os atendimentos em digitação; 2) digitar os resultados de todos (use `--sem-historico` para ganhar tempo); 3) conferir todos com o PEP e com os resultados anteriores (`historico`); 4) liberar (`liberar`, um exame por vez) só os coerentes e dentro da referência. Os incoerentes ficam digitados e o usuário é avisado. Nunca faça um atendimento inteiro de cada vez. Quando o usuário pede só uma etapa, faça só aquela etapa.
+> **Ordem do trabalho (em lote):** 1) colocar TODOS os atendimentos em digitação; 2) digitar os resultados de todos (use `--sem-historico` para ganhar tempo); 3) conferir todos com o PEP e com os resultados anteriores (`historico`); 4) liberar (`liberar`, um exame por vez) só os coerentes e dentro da referência. Para vários atendimentos use os comandos em lote (veja **Trabalho em lote**: `lote digitacao/digitar/conferir/liberar ARQ`). Os incoerentes ficam digitados e o usuário é avisado. Nunca faça um atendimento inteiro de cada vez. Quando o usuário pede só uma etapa, faça só aquela etapa.
 
 ## 🔐 Login: a IA pode fazer pela pessoa
 
@@ -110,7 +110,7 @@ python3 zion.py listar 123456
 python3 zion.py listar 123456 --de "27/10/2026" --ate "27/10/2026 12:00"
 ```
 
-### `digitacao AT [--dry-run] [--desde STATUS] [--de] [--ate]`
+### `digitacao AT [AT ...] [--dry-run] [--desde STATUS] [--de] [--ate]`
 **Pendentes → Digitação** (não é conferência). Leva os exames do atendimento até **Digitação do Resultado** (status 30), passando pelas fases intermediárias (10 Pendente coleta → 20 Material Coletado → 25 Em Análise → 26 Interfaceamento → 30). Filtra por `DT_PRESCRICAO` com `--de` / `--ate` (padrão: últimos 4 dias).
 Quando o sistema responde `IE_GERAR_AMOSTRA=S`, o CLI segue a mesma sequência que o navegador faz (sem gerar amostra nova). Qualquer outra resposta não mapeada faz o CLI **parar**.
 ```bash
@@ -119,7 +119,7 @@ python3 zion.py digitacao 123456
 python3 zion.py digitacao 123456 --de "27/10/2026 08:00" --ate "27/10/2026 12:00" --dry-run
 ```
 
-### `ler AT`
+### `ler AT [AT ...]`
 Lê os valores salvos de todos os exames em Digitação.
 ```bash
 python3 zion.py ler 123456
@@ -233,13 +233,54 @@ python3 zion.py liberar 123456 --exame VDRL --dry-run
 python3 zion.py liberar 123456 --exame VDRL
 ```
 
+## Trabalho em lote (vários atendimentos, em paralelo)
+
+Siga a ordem do topo, etapa por etapa, sempre para **todos** antes da próxima. Um atendimento com erro não para os outros. A saída sai **agrupada por atendimento** (nunca intercalada) e no fim vem um resumo. Padrão: 4 em paralelo (`-j N` muda).
+
+**Vários atendimentos num comando só** (números de exemplo):
+```bash
+python3 zion.py digitacao 100001 100002 100003          # etapa 1 (coloca em Digitação); --dry-run simula
+python3 zion.py ler 100001 100002 100003                 # leitura
+python3 zion.py historico 100001 100002 100003           # leitura: anteriores + PEP
+python3 zion.py conferir --at 100001 100002              # leitura: liberados (status 40)
+```
+
+**Arquivo de lote** (JSON; YAML se tiver PyYAML). Mesmo formato do `--exame`; `hemo` e `gaso` usam as mesmas opções dos comandos (sem `--`):
+```json
+{"atendimentos": [
+  {"at": 100001, "exames": ["TGO=20.7", "BILI.total=0.64", "VDRL=nao reagente"]},
+  {"at": 100002, "exames": ["HIV.Teste Rápido 1=NÃO REAGENTE", "HIV.Teste Rápido 2=NÃO REALIZADO",
+                            "HIV.Conclusão Teste Rápido HIV=AMOSTRA NÃO REAGENTE PARA HIV"], "pep_ok": ["HIV"]},
+  {"at": 100003, "hemo": {"rbc": "4.5", "hgb": "13.2", "hct": "40.1", "vcm": "89", "hcm": "29.3", "chcm": "32.9",
+                          "rdw": "13.1", "wbc": "7.2", "neu": "4.1", "lym": "2.3", "mon": "0.5", "eos": "0.2",
+                          "bas": "0.1", "plt": "250", "vpm": "9.8"},
+                 "gaso": {"ph": "7.38", "pco2": "41", "obs": "venosa"}, "forcar": false}
+]}
+```
+```bash
+python3 zion.py lote digitacao lote.json [--dry-run]   # 1) todos em Digitação
+python3 zion.py lote digitar   lote.json [--dry-run]   # 2) salva tudo (sem histórico; resultado → hemo → gaso por atendimento)
+python3 zion.py lote conferir  lote.json               # 3) só leitura: classifica cada exame
+python3 zion.py lote liberar   lote.json [--dry-run]   # 4) libera só os liberáveis, UM exame por vez
+```
+Classes da etapa 3 (gravadas em `lote.json.conferencia.json`, permissão 600, **tem dado de paciente: nunca commitar**):
+- `COERENTE`: dentro da referência do exame e de acordo com resultados anteriores (sem mudança grande nem faixa crítica) → **liberado** na etapa 4.
+- `PEP_A_CONFIRMAR`: dentro da referência, sem resultado anterior, mas há trecho no PEP (mostrado na saída). **Leia o trecho**; se bater com o resultado, ponha a sigla em `"pep_ok"` daquele atendimento e rode `lote liberar`. Sem `pep_ok` não libera.
+- `FORA_REFERENCIA` / `INCOERENTE`: fica só digitado; avise o usuário com o motivo.
+- `SEM_HISTORICO_PEP`: fica só digitado; avise que não há anterior nem nota compatível.
+- `EXTERNO` (sorologia DB: só PDF), `SEM_RESULTADO`, `FORA_DIGITACAO`, `NAO_ENCONTRADO`: nunca liberados.
+
+`lote liberar` recusa conferência com mais de 60 min (rode `lote conferir` de novo), libera em paralelo entre atendimentos mas **sequencial dentro de cada um**, usa a mesma lógica do `liberar` (para no primeiro aviso daquele atendimento) e termina com um **resumo único**: liberados, digitados e não liberados (com motivo) e falhas.
+
+**Sessão / login:** todos os comandos reaproveitam a sessão salva (`~/.config/zion-cli/session.json`); o token é renovado sozinho (refresh) e só há login quando a sessão expira de vez. Em lote, o processo principal valida a sessão uma vez antes de abrir os workers; cada worker carrega a mesma sessão salva e, se precisar renovar, faz isso sob trava de arquivo (os outros reaproveitam a renovação, ninguém loga em paralelo). Lembre: um login novo derruba a sessão aberta da pessoa no Tasy.
+
 ## Histórico do paciente (só leitura) — `historico`
 
 Todo resultado digitado (normal **ou** alterado, qualquer exame) deve ser comparado com os
 resultados anteriores do paciente e com a evolução clínica antes de reportar. O CLI faz isso
 sozinho depois de `resultado`, `hemo` e `gaso`, e também no `conferir`.
 
-### `historico AT [--exame SIGLA ...] [--dias 90] [--notas 1] [--json]`
+### `historico AT [AT ...] [--exame SIGLA ...] [--dias 90] [--notas 1] [--json]`
 - Só leitura: nada é salvo, aprovado ou liberado.
 - Exames atuais = os que estão em Digitação (30); se não houver, usa o liberado mais recente de cada exame.
 - Para cada campo numérico mostra: valores anteriores com data/hora de coleta e atendimento
