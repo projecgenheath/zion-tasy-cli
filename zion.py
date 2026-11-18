@@ -1025,12 +1025,17 @@ def ds_payload(vo, env):
         if x.get("ieFormatoResultado") in ("V", "DV"):
             v = env.get(x["nrSeqExame"], None if x.get("qtResultado") in (None, "") else float(x["qtResultado"]))
             x["qtResultado"] = None if v is None else num_txt(v); x["dsResultado"] = None
+        elif x.get("ieFormatoResultado") == "P":   # percentual: valor vai em prResultado
+            v = env.get(x["nrSeqExame"], x.get("prResultado"))
+            x["prResultado"] = v; x["qtResultado"] = None; x["dsResultado"] = None
         else:
             x["qtResultado"] = None
             if x["nrSeqExame"] in env: x["dsResultado"] = env[x["nrSeqExame"]]   # lista (S) / texto (D, DL)
             if x.get("dsResultado") is None: x["dsResultado"] = ""
     m = main_sub(novo)
-    if m: novo["exam"]["qtResultado"], novo["exam"]["dsResultado"] = m["qtResultado"], m["dsResultado"]
+    if m:
+        novo["exam"]["qtResultado"], novo["exam"]["dsResultado"] = m["qtResultado"], m["dsResultado"]
+        if m.get("ieFormatoResultado") == "P": novo["exam"]["prResultado"] = m["prResultado"]
     return novo
 
 
@@ -1038,6 +1043,8 @@ def is_num(x): return x.get("ieFormatoResultado") in ("V", "DV")
 
 
 def sub_val(x):
+    if x.get("ieFormatoResultado") == "P":
+        q = x.get("prResultado"); return None if q in (None, "") else float(q)
     if not is_num(x):
         d = x.get("dsResultado"); return d if d else None
     q = x.get("qtResultado")
@@ -1204,7 +1211,7 @@ def _match_opcao(txt, ops):
 def valor_campo(s, txt):
     """-> (valor, dec) ou str de erro. V/DV: float; S: opção da lista; D/DL: texto livre."""
     fmt = s.get("ieFormatoResultado")
-    if fmt in ("V", "DV"):
+    if fmt in ("V", "DV", "P"):   # P = percentual (ex.: HT avulso), grava em prResultado
         try: f, dec, _ = parse_val(txt)
         except ValueError: return f"'{txt}' não é número"
         return f, dec
@@ -1371,7 +1378,7 @@ def exame_campos(vo, campos):
     for nome, txt in campos.items():
         if nome is None:
             s = main_sub(vo)
-            if not s or s.get("ieFormatoResultado") not in ("V", "DV", "S"):
+            if not s or s.get("ieFormatoResultado") not in ("V", "DV", "P", "S"):
                 return f"formato {s and s.get('ieFormatoResultado')} do campo principal; use EXAME.campo=valor (campos: " + \
                     "; ".join(f"{x['nmExame']} [{x.get('ieFormatoResultado')}]" for x in vo["subExams"]) + ")"
         else:
@@ -1704,7 +1711,7 @@ def lancar(z, atend, pedidos, dry, forcar, telas=None, dump=None):
         cs = exame_campos(vo, campos)
         if isinstance(cs, str):
             print(f"  {tag}: {cs} - não lançado"); rel.append((tag, "não suportado")); continue
-        bad = [n for sq, (n, f, dec, s) in cs.items() if s.get("ieFormatoResultado") == "V" and not isinstance(f, str) and dec > (s.get("qtDecimais") or 0)]
+        bad = [n for sq, (n, f, dec, s) in cs.items() if s.get("ieFormatoResultado") in ("V", "P") and not isinstance(f, str) and dec > (s.get("qtDecimais") or 0)]
         if bad:   # V: a tela respeita qtDecimais; DV aceita casas além de qtDecimais (TGO qd=0 gravou 20,7 pela tela)
             print(f"  {tag}: casas decimais demais para {bad} - não lançado"); rel.append((tag, "casas decimais")); continue
         conf = [(n, sub_val(s), f) for sq, (n, f, dec, s) in cs.items() if sub_val(s) not in (None, 0) and vdiff(sub_val(s), f)]
@@ -3168,9 +3175,9 @@ def _vo_numericos(vo):
     """{nrSeqExame: (nome, valor_float, unidade)} dos subexames numéricos com valor."""
     out = {}
     for x in (vo or {}).get("subExams") or []:
-        if x.get("ieFormatoResultado") not in ("V", "DV"):
+        if x.get("ieFormatoResultado") not in ("V", "DV", "P"):
             continue
-        v = _num_or_none(x.get("qtResultado"))
+        v = _num_or_none(x.get("prResultado") if x.get("ieFormatoResultado") == "P" else x.get("qtResultado"))
         if v is None:
             continue
         out[x["nrSeqExame"]] = ((x.get("nmExame") or "").strip(), v, x.get("dsUnidadeMedida") or "")
@@ -3245,7 +3252,7 @@ def historico_exame(z, it, vo, atend, dias=HIST_DIAS_PADRAO, cache=None, nr=None
         atuais = {sq: (n, None, u) for sq, (n, v, u) in atuais.items()}
     if not atuais and st_vo < 35:   # campos numéricos ainda vazios (None)
         atuais = {x["nrSeqExame"]: ((x.get("nmExame") or "").strip(), None, x.get("dsUnidadeMedida") or "")
-                  for x in (vo or {}).get("subExams") or [] if x.get("ieFormatoResultado") in ("V", "DV")}
+                  for x in (vo or {}).get("subExams") or [] if x.get("ieFormatoResultado") in ("V", "DV", "P")}
         nao_digitado = bool(atuais)
     main = main_sub(vo) if vo else None
     series = hist_series(z, nr, seq_res, nse, cd, dias, cache) if seq_res else {}
@@ -3459,7 +3466,7 @@ def cmd_historico(z, atend, exames=None, dias=HIST_DIAS_PADRAO, notas=1, as_json
         if it["NR_SEQ_PRESCR"] not in t.nodes:
             continue
         vo = t.build(it["NR_SEQ_PRESCR"])["ResultVO"]
-        if not any(x.get("ieFormatoResultado") in ("V", "DV") for x in vo.get("subExams") or []):
+        if not any(x.get("ieFormatoResultado") in ("V", "DV", "P") for x in vo.get("subExams") or []):
             if not as_json:
                 print(f"  {it['CD_EXAME']:<8} {it['NM_EXAME'].strip()[:40]}: exame sem campo numérico — sem comparação")
             continue
