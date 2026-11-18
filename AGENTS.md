@@ -2,7 +2,7 @@
 
 > ⚠️ **Faça SÓ o que o usuário pediu.** Pedido para colocar em digitação = só o comando de digitação e a confirmação dos atendimentos movidos. Não rode conferir, historico, fila nem resumo de resultados/liberações do dia sem pedido explícito. A comparação com o histórico/PEP só acontece quando você digita/salva um resultado.
 
-> **Ordem do trabalho (em lote):** 1) colocar TODOS os atendimentos em digitação; 2) digitar os resultados de todos (use `--sem-historico` para ganhar tempo); 3) conferir todos com o PEP e com os resultados anteriores (`historico`); 4) liberar (`liberar`, um exame por vez) só os coerentes e dentro da referência. Para vários atendimentos use os comandos em lote (veja **Trabalho em lote**: `lote digitacao/digitar/conferir/liberar ARQ`). Os incoerentes ficam digitados e o usuário é avisado. Nunca faça um atendimento inteiro de cada vez. Quando o usuário pede só uma etapa, faça só aquela etapa.
+> **Ordem do trabalho (em lote):** 1) colocar TODOS os atendimentos em digitação; 2) digitar os resultados de todos (use `--sem-historico` para ganhar tempo); 3) conferir todos com o PEP e com os resultados anteriores (`historico`); 4) liberar (`liberar`, um exame por vez) todo exame **dentro da referência** e coerente com o histórico/PEP, mesmo sem resultado anterior ou nota no PEP. Fora da referência, qualitativo alterado (REAGENTE/Positivo), sem referência determinável ou incoerente (variação grande vs o anterior, ou PEP dizendo o contrário) fica só digitado e o usuário é avisado. Para vários atendimentos use os comandos em lote (veja **Trabalho em lote**: `lote digitacao/digitar/conferir/liberar ARQ`). Nunca faça um atendimento inteiro de cada vez. Quando o usuário pede só uma etapa, faça só aquela etapa.
 
 ## 🔐 Login: a IA pode fazer pela pessoa
 
@@ -91,7 +91,7 @@ python3 zion.py conferir --at 100001 100002              # leitura: liberados (s
 {"atendimentos": [
   {"at": 100001, "exames": ["TGO=20.7", "BILI.total=0.64", "VDRL=nao reagente"]},
   {"at": 100002, "exames": ["HIV.Teste Rápido 1=NÃO REAGENTE", "HIV.Teste Rápido 2=NÃO REALIZADO",
-                            "HIV.Conclusão Teste Rápido HIV=AMOSTRA NÃO REAGENTE PARA HIV"], "pep_ok": ["HIV"]},
+                            "HIV.Conclusão Teste Rápido HIV=AMOSTRA NÃO REAGENTE PARA HIV"]},
   {"at": 100003, "hemo": {"rbc": "4.5", "hgb": "13.2", "hct": "40.1", "vcm": "89", "hcm": "29.3", "chcm": "32.9",
                           "rdw": "13.1", "wbc": "7.2", "neu": "4.1", "lym": "2.3", "mon": "0.5", "eos": "0.2",
                           "bas": "0.1", "plt": "250", "vpm": "9.8"},
@@ -104,11 +104,13 @@ python3 zion.py lote digitar   lote.json [--dry-run]   # 2) salva tudo (sem hist
 python3 zion.py lote conferir  lote.json               # 3) só leitura: classifica cada exame
 python3 zion.py lote liberar   lote.json [--dry-run]   # 4) libera só os liberáveis, UM exame por vez
 ```
+`"pep_ok"` só é necessário em `PEP_A_CONFIRMAR` (exame sem referência determinável, ex.: tipagem). HIV/VDRL não reagente, dentro da referência, libera sem `"pep_ok"`.
+
 Classes da etapa 3 (gravadas em `lote.json.conferencia.json`, permissão 600, **tem dado de paciente: nunca commitar**):
-- `COERENTE`: dentro da referência do exame e de acordo com resultados anteriores (sem mudança grande nem faixa crítica) → **liberado** na etapa 4.
-- `PEP_A_CONFIRMAR`: dentro da referência, sem resultado anterior, mas há trecho no PEP (mostrado na saída). **Leia o trecho**; se bater com o resultado, ponha a sigla em `"pep_ok"` daquele atendimento e rode `lote liberar`. Sem `pep_ok` não libera.
-- `FORA_REFERENCIA` / `INCOERENTE`: fica só digitado; avise o usuário com o motivo.
-- `SEM_HISTORICO_PEP`: fica só digitado; avise que não há anterior nem nota compatível.
+- `COERENTE`: dentro da referência e de acordo com resultados anteriores (sem mudança grande nem faixa crítica) → **liberado** na etapa 4.
+- `DENTRO_REFERENCIA`: dentro da referência, mesmo sem resultado anterior ou trecho no PEP (qualitativo normal como NÃO REAGENTE/Negativo também entra aqui) → **liberado** na etapa 4, sem precisar de `"pep_ok"`.
+- `PEP_A_CONFIRMAR`: sem referência determinável, mas há trecho no PEP (mostrado na saída). **Leia o trecho**; se bater, ponha a sigla em `"pep_ok"` daquele atendimento e rode `lote liberar`. Sem `pep_ok` não libera.
+- `FORA_REFERENCIA` / `INCOERENTE` / `QUALITATIVO_ALTERADO` / `SEM_REFERENCIA`: fica só digitado; avise o usuário com o motivo.
 - `EXTERNO` (sorologia DB: só PDF), `SEM_RESULTADO`, `FORA_DIGITACAO`, `NAO_ENCONTRADO`: nunca liberados.
 
 `lote liberar` recusa conferência com mais de 60 min (rode `lote conferir` de novo), libera em paralelo entre atendimentos mas **sequencial dentro de cada um**, usa a mesma lógica do `liberar` (para no primeiro aviso daquele atendimento) e termina com um **resumo único**: liberados, digitados e não liberados (com motivo) e falhas.
@@ -122,10 +124,10 @@ Classes da etapa 3 (gravadas em `lote.json.conferencia.json`, permissão 600, **
 4. **Sempre** rode com `--dry-run` primeiro e confira.
 5. Salve (sem `--dry-run`).
 6. **Sempre** confira a releitura que o CLI imprime (ou `ler AT`) e reporte ao usuário os valores gravados.
-7. Compare com o histórico/PEP. **Só** se o exame estiver coerente e dentro da referência: `liberar AT --exame SIGLA --dry-run` e depois `liberar AT --exame SIGLA` (um por vez; confira status 40).
+7. Compare com o histórico/PEP. Se o exame estiver **dentro da referência** e coerente (mesmo sem anterior ou nota no PEP): `liberar AT --exame SIGLA --dry-run` e depois `liberar AT --exame SIGLA` (um por vez; confira status 40). Fora da referência, qualitativo alterado, sem referência determinável ou incoerente: deixe só digitado e avise.
 
 ## Regras de digitação
-- **Liberar só com `liberar AT --exame SIGLA`, um exame por vez**, e só o exame **validado como coerente** com o histórico/PEP (`historico AT`) **e dentro da referência**. Incoerente/discordante/fora da referência → deixe só digitado e avise o usuário. Rode `--dry-run` antes. Nunca "Liberar todos", nunca outro meio. `liberar` só age em status 30 com resultado salvo, nunca em sorologia externa, para no primeiro aviso e confirma status 40 na releitura. Siga também a regra de liberação do usuário/operador, se houver uma mais restrita.
+- **Liberar só com `liberar AT --exame SIGLA`, um exame por vez**, o exame **dentro da referência** e coerente com o histórico/PEP (`historico AT`), mesmo sem resultado anterior ou nota no PEP. Fora da referência, qualitativo alterado (REAGENTE/Positivo), sem referência determinável ou incoerente (variação grande vs o anterior, ou PEP dizendo o contrário) → deixe só digitado e avise o usuário. Rode `--dry-run` antes. Nunca "Liberar todos", nunca outro meio. `liberar` só age em status 30 com resultado salvo, nunca em sorologia externa, para no primeiro aviso e confirma status 40 na releitura. Siga também a regra de liberação do usuário/operador, se houver uma mais restrita.
 - **⚠️ sorologia ≠ teste rápido.** Sorologias (nome contendo "Sorologia", ou siglas em `EXAMES_EXTERNOS_BLOQUEADOS`: TOXG, TOXM, HBSAG, HCV, HBCM, HBCG, A-HBS, CMVG, CMVM, RUGE, RUME, HIV1/2, …) vão para **outro laboratório**. O CLI **recusa** digitar nelas em `resultado`/`hemo`/`gaso` — **sem override**, nem com `--forcar`. Não invente valor nem zere. Testes rápidos (`TRTOXO`, `HIV`, `TRS`, `TRHCV`) seguem normais.
 - **Teste Rápido HIV (`HIV`):** TR2 só é feito se TR1 = REAGENTE. Se TR1 = NÃO REAGENTE, grave TR2 = **NÃO REALIZADO** (o CLI troca sozinho e avisa, inclusive se TR2 vier omitido ou como NR). Não confundir `HIV` (teste rápido) com `HIV1/2` (sorologia, bloqueada).
 - **Teste Rápido Toxo (`TRTOXO`):** o campo principal (*Teste Rápido Toxo IgG/IgM*) tem **lista de opções vazia** no Tasy — por isso `TRTOXO=NÃO REAGENTE` falhava com `(opções: )`. Os valores reais são **Anticorpos IgG** e **Anticorpos IgM** (`REAGENTE` / `NÃO REAGENTE`). O CLI: `TRTOXO=NÃO REAGENTE` (também `NR`/`NEG`) → preenche IgG **e** IgM; se forem diferentes use `TRTOXO.IgG=` / `TRTOXO.IgM=`. **Não** é sorologia (`TOXG`/`TOXM`, bloqueadas).

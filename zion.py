@@ -4527,13 +4527,35 @@ _NEUTROS = ("naoreagente", "negativo", "negativa", "ausente", "ausentes", "naode
 _POSITIVOS = ("reagente", "positivo", "positiva", "presente", "detectado", "detectavel")
 
 
-def _ref_fora(vo):
-    """Campos fora da referência do próprio exame (qtMinima/qtMaxima, prMinimo/prMaximo, dsReferencia)."""
-    fora = []
+def _campo_resultado(x):
+    nm = (x.get("nmExame") or "").strip(); sl = _slug(nm)
+    if not nm or sl.startswith(("observ", "idade")) or x.get("visible") is False and x.get("lineNumber") is None:
+        return None
+    return nm, sl
+
+
+def _qual_tipo(vs):
+    if "naorealizado" in vs:
+        return "naorealizado"
+    if any(n in vs for n in _NEUTROS):
+        return "neutro"
+    if any(p in vs for p in _POSITIVOS):
+        return "positivo"
+    return None
+
+
+def _eh_tipagem(sl):
+    return sl in ("abo", "rh", "rhd") or any(k in sl for k in ("tiposanguineo", "fatorrh", "gruposanguineo", "fatorrhd"))
+
+
+def _ref_avaliar(vo):
+    """Classifica cada campo com valor: dentro, fora, qualitativo alterado ou sem referência determinável."""
+    fora, alterado, sem_ref, dentro = [], [], [], []
     for x in vo.get("subExams") or []:
-        nm = (x.get("nmExame") or "").strip(); sl = _slug(nm)
-        if not nm or sl.startswith(("observ", "idade")) or x.get("visible") is False and x.get("lineNumber") is None:
+        c = _campo_resultado(x)
+        if not c:
             continue
+        nm, sl = c
         v = sub_val(x)
         if v in (None, ""):
             continue
@@ -4543,17 +4565,84 @@ def _ref_fora(vo):
                 lo, hi = _num_or_none(x.get("prMinimo")), _num_or_none(x.get("prMaximo"))
             else:
                 lo, hi = _num_or_none(x.get("qtMinima")), _num_or_none(x.get("qtMaxima"))
+            faixa = f"{vtxt(lo) if lo is not None else '-'}–{vtxt(hi) if hi else '-'}"
             if not lo and not hi:
-                continue
-            if (lo is not None and lo != 0 and v < lo) or (hi and v > hi):
-                fora.append(f"{nm} {vtxt(v)} fora de {vtxt(lo) if lo is not None else '-'}–{vtxt(hi) if hi else '-'}")
+                sem_ref.append(f"{nm} {vtxt(v)} (sem faixa numérica)")
+            elif (lo is not None and lo != 0 and v < lo) or (hi and v > hi):
+                fora.append(f"{nm} {vtxt(v)} fora de {faixa}")
+            else:
+                dentro.append(f"{nm} {vtxt(v)} (ref {faixa})")
+            continue
+        vs, rs = _slug(v), _slug(x.get("dsReferencia") or "")
+        tipo, ref_n, ref_p = _qual_tipo(vs), bool(rs) and any(n in rs for n in _NEUTROS), bool(rs) and any(p in rs for p in _POSITIVOS)
+        if tipo == "naorealizado":
+            continue
+        if tipo == "neutro" and not ref_p:
+            dentro.append(f"{nm} {v}" + (f" (ref {x.get('dsReferencia')})" if rs else " (valor normal)"))
+        elif tipo == "positivo" and ref_n:
+            fora.append(f"{nm} {v} (referência: {x.get('dsReferencia')})")
+        elif tipo == "positivo" and not _eh_tipagem(sl):
+            alterado.append(f"{nm} {v}")
+        elif rs and (vs in rs or rs in vs):
+            dentro.append(f"{nm} {v} (ref {x.get('dsReferencia')})")
         else:
-            vs, rs = _slug(v), _slug(x.get("dsReferencia") or "")
-            if "naorealizado" in vs or any(n in vs for n in _NEUTROS):
-                continue
-            if rs and any(n in rs for n in _NEUTROS) and any(p in vs for p in _POSITIVOS):
-                fora.append(f"{nm} {v} (referência: {x.get('dsReferencia')})")
-    return fora
+            sem_ref.append(f"{nm} {v}" + (f" (ref {x.get('dsReferencia')})" if rs else " (sem referência determinável)"))
+    return {"fora": fora, "alterado": alterado, "sem_ref": sem_ref, "dentro": dentro}
+
+
+def _ref_fora(vo):
+    """Campos fora da referência do próprio exame (qtMinima/qtMaxima, prMinimo/prMaximo, dsReferencia)."""
+    return _ref_avaliar(vo)["fora"]
+
+
+def _pep_incoerente(pep, vo):
+    """Trechos do PEP com polaridade oposta a um resultado qualitativo normal/alterado."""
+    tipos = []
+    for x in vo.get("subExams") or []:
+        if not _campo_resultado(x):
+            continue
+        v = sub_val(x)
+        if isinstance(v, str):
+            t = _qual_tipo(_slug(v))
+            if t in ("neutro", "positivo"):
+                tipos.append(t)
+    if not pep or not tipos or len(set(tipos)) > 1:
+        return []
+    tipo, avisos = tipos[0], []
+    for p in pep:
+        ts = _slug(p.get("trecho") or "")
+        tem_n, tem_p = any(n in ts for n in _NEUTROS), any(q in ts for q in _POSITIVOS)
+        if tipo == "neutro" and tem_p and not tem_n:
+            avisos.append(f"PEP {p.get('dt') or ''} sugere resultado alterado: {(p.get('trecho') or '')[:120]}")
+        elif tipo == "positivo" and tem_n and not tem_p:
+            avisos.append(f"PEP {p.get('dt') or ''} sugere resultado normal: {(p.get('trecho') or '')[:120]}")
+    return avisos
+
+
+def _classificar_resultado(av, incoer, hist_ok, pep, motivo_notas=None):
+    """Define classe e motivo da conferência (sem I/O). av = saída de _ref_avaliar."""
+    if av["fora"]:
+        return "FORA_REFERENCIA", "fora da referência: " + "; ".join(av["fora"][:4])
+    if av["alterado"]:
+        return "QUALITATIVO_ALTERADO", "qualitativo alterado (REAGENTE/Positivo): " + "; ".join(av["alterado"][:4])
+    if av["sem_ref"] or not av["dentro"]:
+        detalhe = "; ".join(av["sem_ref"][:4]) or "nenhum campo com referência conhecida"
+        if pep:
+            return ("PEP_A_CONFIRMAR",
+                    "sem referência determinável; há trecho no PEP — leia e, se bater, "
+                    "ponha a sigla em \"pep_ok\" deste atendimento no arquivo"
+                    + (f" ({detalhe})" if detalhe else ""))
+        return "SEM_REFERENCIA", "sem referência determinável: " + detalhe
+    if incoer:
+        return "INCOERENTE", "incoerente com o histórico/PEP: " + "; ".join(incoer[:4])
+    if hist_ok:
+        return "COERENTE", "dentro da referência e de acordo com resultados anteriores"
+    if pep:
+        return ("DENTRO_REFERENCIA",
+                "dentro da referência (sem resultado anterior; trecho no PEP é informativo e não bloqueia a liberação)")
+    return ("DENTRO_REFERENCIA",
+            "dentro da referência (sem resultado anterior e sem evolução no PEP; liberável)"
+            + (f" ({motivo_notas})" if motivo_notas else ""))
 
 
 def conferir_at(z, atend, siglas=None, dias=HIST_DIAS_PADRAO, n_notas=20):
@@ -4593,8 +4682,9 @@ def conferir_at(z, atend, siglas=None, dias=HIST_DIAS_PADRAO, n_notas=20):
         if not vals:
             r.update(classe="SEM_RESULTADO", motivo="nenhum resultado salvo"); continue
         r["valores"] = "; ".join(f"{(x.get('nmExame') or '').strip()}={vtxt(sub_val(x))}" for x in vals[:8])
-        fora = _ref_fora(vo)
-        r["fora_ref"] = fora
+        av = _ref_avaliar(vo)
+        r["fora_ref"] = av["fora"]
+        r["ref"] = av
         hist_ok, incoer, hist_txt = False, [], []
         if any(x.get("ieFormatoResultado") in ("V", "DV", "P") for x in vo.get("subExams") or []):
             try:
@@ -4617,18 +4707,10 @@ def conferir_at(z, atend, siglas=None, dias=HIST_DIAS_PADRAO, n_notas=20):
                 if len(pep) >= 2:
                     break
         r["pep"] = pep
-        if fora:
-            r.update(classe="FORA_REFERENCIA", motivo="fora da referência: " + "; ".join(fora[:4]))
-        elif incoer:
-            r.update(classe="INCOERENTE", motivo="incoerente com resultados anteriores: " + "; ".join(incoer[:4]))
-        elif hist_ok:
-            r.update(classe="COERENTE", motivo="dentro da referência e de acordo com resultados anteriores")
-        elif pep:
-            r.update(classe="PEP_A_CONFIRMAR", motivo="sem resultado anterior; há trecho no PEP — leia e, se bater, "
-                                                       "ponha a sigla em \"pep_ok\" deste atendimento no arquivo")
-        else:
-            r.update(classe="SEM_HISTORICO_PEP", motivo="sem resultado anterior e sem evolução compatível no PEP"
-                     + (f" ({motivo_notas})" if motivo_notas else ""))
+        incoer += _pep_incoerente(pep, vo)
+        r["incoerencias"] = incoer
+        classe, motivo = _classificar_resultado(av, incoer, hist_ok, pep, motivo_notas)
+        r.update(classe=classe, motivo=motivo)
     return {"at": atend, "exames": exames, "notas_motivo": motivo_notas}
 
 
@@ -4678,19 +4760,25 @@ def lote_conferir(z, a, path, itens):
     if falhas:
         print(f"  Falhas: {', '.join(falhas)}")
     print(f"  Conferência gravada em {cp} (dados de paciente: arquivo local, permissão 600 — nunca commitar)")
-    print("  Etapa 4: `lote liberar` libera só COERENTE e PEP_A_CONFIRMAR que estiverem em \"pep_ok\".")
+    print("  Etapa 4: `lote liberar` libera COERENTE e DENTRO_REFERENCIA (dentro da referência, mesmo sem histórico/PEP).")
+    print("  PEP_A_CONFIRMAR (sem referência determinável, com trecho no PEP) só com \"pep_ok\".")
+    print("  Não libera: FORA_REFERENCIA, QUALITATIVO_ALTERADO, INCOERENTE, SEM_REFERENCIA, EXTERNO, SEM_RESULTADO, FORA_DIGITACAO.")
     return conf
 
 
+_CLASSES_LIBERAVEIS = frozenset({"COERENTE", "DENTRO_REFERENCIA"})
+
+
 def _liberaveis(d, pep_ok):
+    """COERENTE e DENTRO_REFERENCIA saem liberáveis; PEP_A_CONFIRMAR só com pep_ok (sem referência determinável)."""
     sim, nao = [], []
     for x in d.get("exames", []):
-        if x["classe"] == "COERENTE" or (x["classe"] == "PEP_A_CONFIRMAR" and x["sigla"] in pep_ok):
+        if x["classe"] in _CLASSES_LIBERAVEIS or (x["classe"] == "PEP_A_CONFIRMAR" and x["sigla"] in pep_ok):
             sim.append(x)
         else:
-            motivo = x["motivo"]
+            motivo = x.get("motivo") or x["classe"]
             if x["classe"] == "PEP_A_CONFIRMAR":
-                motivo = "PEP a confirmar (sigla não está em pep_ok)"
+                motivo = "sem referência determinável; PEP a confirmar (sigla não está em pep_ok)"
             nao.append((x, motivo))
     return sim, nao
 
@@ -4716,7 +4804,7 @@ def lote_liberar(z, a, path, itens):
         if sim:
             plano[e["at"]] = sim
             jobs.append((e["at"], [["liberar", e["at"]] + [y for x in sim for y in ("--exame", x["sigla"])] + (["--dry-run"] if a.dry_run else [])]))
-    print(f"LOTE etapa 4 — liberar UM exame por vez, só COERENTE/pep_ok, nunca sorologia externa: "
+    print(f"LOTE etapa 4 — liberar UM exame por vez, só COERENTE/DENTRO_REFERENCIA (e PEP_A_CONFIRMAR com pep_ok), nunca sorologia externa: "
           f"{sum(len(v) for v in plano.values())} exame(s) em {len(jobs)} atendimento(s)" + (" (dry-run: nada é enviado)" if a.dry_run else ""))
     liberados = []
     if jobs:
@@ -4833,7 +4921,7 @@ def main():
     hi.add_argument("--json", dest="as_json", action="store_true")
     lt = sp.add_parser("lote", help="arquivo de lote: digitacao → digitar → conferir → liberar, em paralelo entre atendimentos")
     lt.add_argument("etapa", choices=["digitacao", "digitar", "conferir", "liberar"],
-                    help="digitacao=coloca em Digitação; digitar=salva resultados; conferir=histórico/PEP/referência; liberar=só COERENTES")
+                    help="digitacao=coloca em Digitação; digitar=salva resultados; conferir=histórico/PEP/referência; liberar=dentro da referência e coerentes")
     lt.add_argument("arquivo", help="JSON (ou YAML) com {\"atendimentos\": [...]}")
     lt.add_argument("--dry-run", action="store_true", help="não envia nada (digitacao/digitar/liberar)")
     lt.add_argument("--dias", type=int, default=HIST_DIAS_PADRAO, help="janela do histórico na conferência (padrão 90)"); lt.add_argument("-j", "--workers", type=int, default=LOTE_WORKERS, help="atendimentos em paralelo (padrão 4)")
