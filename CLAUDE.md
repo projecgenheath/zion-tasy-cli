@@ -77,13 +77,14 @@ python3 zion.py conferir --json           # inclui dt_prescricao / campo_hora=DT
 4. **Sempre** rode com `--dry-run` primeiro e confira.
 5. Salve (sem `--dry-run`).
 6. **Sempre** confira a releitura que o CLI imprime (ou `ler AT`) e reporte ao usuário os valores gravados.
+7. Compare com o histórico/PEP. **Só** se o exame estiver coerente e dentro da referência: `liberar AT --exame SIGLA --dry-run` e depois `liberar AT --exame SIGLA` (um por vez; confira status 40).
 
 ## Regras de digitação
-- **Nunca liberar** resultado. O CLI só salva; não tente liberar por nenhum outro meio. Se aparecer confirmação de mudança para "Resultado Aprovado (Laudado)", cancele essa confirmação.
+- **Liberar só com `liberar AT --exame SIGLA`, um exame por vez**, e só o exame **validado como coerente** com o histórico/PEP (`historico AT`) **e dentro da referência**. Incoerente/discordante/fora da referência → deixe só digitado e avise o usuário. Rode `--dry-run` antes. Nunca "Liberar todos", nunca outro meio. `liberar` só age em status 30 com resultado salvo, nunca em sorologia externa, para no primeiro aviso e confirma status 40 na releitura. Siga também a regra de liberação do usuário/operador, se houver uma mais restrita.
 - **⚠️ sorologia ≠ teste rápido.** Sorologias (nome contendo "Sorologia", ou siglas em `EXAMES_EXTERNOS_BLOQUEADOS`: TOXG, TOXM, HBSAG, HCV, HBCM, HBCG, A-HBS, CMVG, CMVM, RUGE, RUME, HIV1/2, …) vão para **outro laboratório**. O CLI **recusa** digitar nelas em `resultado`/`hemo`/`gaso` — **sem override**, nem com `--forcar`. Não invente valor nem zere. Testes rápidos (`TRTOXO`, `HIV`, `TRS`, `TRHCV`) seguem normais.
 - **Teste Rápido HIV (`HIV`):** TR2 só é feito se TR1 = REAGENTE. Se TR1 = NÃO REAGENTE, grave TR2 = **NÃO REALIZADO** (o CLI troca sozinho e avisa, inclusive se TR2 vier omitido ou como NR). Não confundir `HIV` (teste rápido) com `HIV1/2` (sorologia, bloqueada).
 - **Teste Rápido Toxo (`TRTOXO`):** o campo principal (*Teste Rápido Toxo IgG/IgM*) tem **lista de opções vazia** no Tasy — por isso `TRTOXO=NÃO REAGENTE` falhava com `(opções: )`. Os valores reais são **Anticorpos IgG** e **Anticorpos IgM** (`REAGENTE` / `NÃO REAGENTE`). O CLI: `TRTOXO=NÃO REAGENTE` (também `NR`/`NEG`) → preenche IgG **e** IgM; se forem diferentes use `TRTOXO.IgG=` / `TRTOXO.IgM=`. **Não** é sorologia (`TOXG`/`TOXM`, bloqueadas).
-- **Histórico do paciente (obrigatório em todo resultado digitado):** depois de `resultado`/`hemo`/`gaso` o CLI compara sozinho com os resultados anteriores (todos os atendimentos) e mostra tendência e Δ; use `historico AT [--exame SIGLA]` (só leitura) para consultar antes. Alertas: mudança > 50%, passou a faixa crítica, `AVISO: sem resultado anterior`. O CLI também lê as notas clínicas do PEP e mostra o trecho ligado a cada exame (ex.: FUNÇÃO RENAL/DIURESE para creatinina); sem trecho sai `AVISO: sem evolução clínica compatível`. Classifique cada valor como coerente/discordante/sem histórico no resumo ao usuário. **Nunca deixe de salvar por falta de histórico**; só avise no resumo. Nunca libere.
+- **Histórico do paciente (obrigatório em todo resultado digitado):** depois de `resultado`/`hemo`/`gaso` o CLI compara sozinho com os resultados anteriores (todos os atendimentos) e mostra tendência e Δ; use `historico AT [--exame SIGLA]` (só leitura) para consultar antes. Alertas: mudança > 50%, passou a faixa crítica, `AVISO: sem resultado anterior`. O CLI também lê as notas clínicas do PEP e mostra o trecho ligado a cada exame (ex.: FUNÇÃO RENAL/DIURESE para creatinina); sem trecho sai `AVISO: sem evolução clínica compatível`. Classifique cada valor como coerente/discordante/sem histórico no resumo ao usuário. **Nunca deixe de salvar por falta de histórico**; só avise no resumo. `resultado`/`hemo`/`gaso` não liberam; liberar é só pelo `liberar` (regra acima).
 - **Laudos DB Diagnósticos (sorologias):** use `db-buscar AT` → `db-anexar AT --dry-run` → `db-anexar AT`. **Um PDF por exame** (PDF do TOXG só no exame TOXG; do TOXM só no TOXM), nunca um PDF combinado. Anexar não libera. Credencial DB: `db-login --password-stdin`; nunca repita CPF/senha nem grave em arquivos do repo.
 - **Creatinina (CREA):** se o layout tiver campo de idade (ex.: "Idade (Sexo Feminino > 18 anos)") e o paciente tiver mais de 12 anos, o CLI preenche a idade automaticamente a partir da data de nascimento e envia a eTFG (MDRD 186) para o campo calculado. Pacientes ≤ 12 anos ficam intactos. Se o usuário passar `CREA.idade=...` ou `CREA.etfg=...`, esses valores são respeitados.
 - **Ureia:** só a parte inteira, truncada (30,56 → 30; 11,72 → 11).
@@ -103,7 +104,7 @@ python3 zion.py conferir --json           # inclui dt_prescricao / campo_hora=DT
 O EAS é o exame em que IAs mais erram. O CLI **normaliza sozinho**; mesmo assim siga o modelo abaixo.
 
 Sempre use `--forcar` no URN1 (o modelo já vem com valores "normais" preenchidos).
-**Nunca liberar.**
+**Não liberar** sem validar contra histórico/PEP e referência (regra de `liberar`).
 
 ### Sedimento (pares simples / x1000)
 No papel, "13.000/mL" significa:

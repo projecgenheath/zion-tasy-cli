@@ -1769,6 +1769,125 @@ def cmd_resultado(z, atend, exames, dry, forcar, dump=None):
     lancar(z, atend, pedidos, dry, forcar, dump=dump)
 
 
+# ---------- aprovar + liberar (HAR da tela: botão direito > Aprovar exame > Ok; botão direito > Liberar exame > Ok) ----------
+def _cons_txt(r):
+    """Texto de DS_CONSISTENCIA_P (vazio = sem consistência)."""
+    c = (r or {}).get("DS_CONSISTENCIA_P") if isinstance(r, dict) else None
+    if isinstance(c, dict):
+        c = c.get("valor")
+    return (c or "").strip() if isinstance(c, str) else (str(c) if c else "")
+
+
+def _item_atual(t, seq):
+    for x in t.ativar():
+        if x.get("NR_SEQ_PRESCR") == seq:
+            return x
+    return None
+
+
+def aprovar_liberar_um(z, t, it, dry):
+    """Aprova e libera UM exame, na mesma ordem de chamadas da tela. Para no primeiro aviso/erro."""
+    nr, seq, nse = t.nr, it["NR_SEQ_PRESCR"], it["NR_SEQ_EXAME"]
+    tag = f"{it['CD_EXAME']} (seq {seq})"
+    if exame_externo_bloqueado(it):
+        print(f"  {msg_bloqueio_externo(it)}"); return "bloqueado externo"
+    st0 = it.get("IE_STATUS_ATEND")
+    if st0 != 30 or seq not in t.nodes:
+        print(f"  {tag}: status {st0} - só libero exame em Digitação (30); ignorado"); return f"ignorado (status {st0})"
+    node = t.nodes[seq][1]
+    vo = t.clicar(seq, nse)["ResultVO"]
+    vals = [x for x in vo.get("subExams", []) if sub_val(x) not in (None, 0, "")]
+    if not vals:
+        print(f"  {tag}: sem resultado salvo - não aprovo"); return "sem resultado"
+    desc = "; ".join(f"{(x.get('nmExame') or '').strip()}={vtxt(sub_val(x))}" for x in vals[:4])
+    seq_res = it.get("NR_SEQ_RESULTADO") or t.seq_res
+    formato = node.get("NR_SEQ_FORMATO") or it.get("NR_SEQ_FORMATO")
+    user = z.sess.get("nmUsuario") or (USER or "")[:15]
+    perfil = z.sess.get("cdPerfil")
+    if not formato or not user or not perfil:
+        print(f"  {tag}: faltou NR_SEQ_FORMATO/usuário/perfil - parei"); return "erro: dados incompletos"
+    if dry:
+        print(f"  [dry-run] {tag}: {it['NM_EXAME'].strip()} [{desc}] status 30 -> aprovaria (aprovarExame) e liberaria "
+              f"(executaProcedurePadrao33275 + updateResultLaboratorio) — nada enviado")
+        return "dry-run"
+    # --- Aprovar exame (HAR: checagens -> 4313 -> 28570 'A' -> 113 -> 286014 -> aprovarExame 1 -> approvedReportUpdate -> aprovarExame 3 -> criarPDF)
+    z.post("CorLabF3/executeQuery", [S("OBJECT_SCRIPT_GET_FLAG_RESULT_CRITICO"), H({"NR_PRESCRICAO": nr, "NR_SEQUENCIA": seq})])
+    z.post("CorLabF3/executaConsultaPadraoAsHashMap237079", [H({"NR_SEQ_RESULTADO_P": seq_res, "NR_SEQ_GRUPO_P": None})])
+    ok = z.post("CorLabF3/executaFunctionPadrao4313", [H({"NR_SEQ_RESULTADO_P": seq_res, "NR_SEQ_PRESCR_P": seq})])
+    if (ok or {}).get("dados") != "S":
+        print(f"  {tag}: verificação antes de aprovar (4313) respondeu {ok!r} - parei, nada aprovado"); return "parado antes de aprovar"
+    for path, body in (("CorLabF3/executaProcedurePadrao28570", {"NR_PRESCRICAO_P": nr, "NR_SEQ_PRESCR_P": seq, "IE_OPCAO_P": "A", "CD_PERFIL_ATIVO_P": perfil}),
+                       ("CorLabF3/executaProcedurePadrao113", {"NR_PRESCRICAO_P": nr, "NR_SEQ_PRESCR_P": seq})):
+        c = _cons_txt(z.post(path, [H(body)]))
+        if c:
+            print(f"  {tag}: consistência na aprovação ({path.split('/')[-1]}): {c} - parei, nada aprovado"); return "consistência na aprovação"
+    mic = z.post("CorLabF3/executaConsultaPadraoAsHashMap286014", [H({"NR_SEQ_EXAME": nse})])
+    if (mic or {}).get("QT_EXIGE_MICROORG") not in (None, 0, "0"):
+        print(f"  {tag}: exame exige microrganismo (QT_EXIGE_MICROORG={mic.get('QT_EXIGE_MICROORG')}) - parei, nada aprovado"); return "exige microrganismo"
+    corpo = {"NR_PRESCRICAO": nr, "NR_SEQ_PRESCR": seq, "NR_SEQ_RESULTADO": seq_res, "NR_SEQ_FORMATO": formato,
+             "NR_SEQ_EXAME": nse, "NM_USUARIO_APROV": user}
+    r1 = z.post("CorLabF3/aprovarExame", [H(corpo), {"tipo": "int", "valor": 1}])
+    if (r1 or {}).get("IE_EXAME_APROV") != "S":
+        print(f"  {tag}: aprovarExame respondeu {r1!r} - parei"); return "aprovação recusada"
+    z.post("CorLabF3/approvedReportUpdate", [M({"NR_PRESCRICAO": nr, "NR_SEQ_PRESCR": seq})])
+    z.post("CorLabF3/aprovarExame", [H(corpo), {"tipo": "int", "valor": 3}])
+    z.post("CorLabF3/criarPDF", [H({"NR_PRESCRICAO_P": nr, "NR_SEQ_PRESCR_P": seq})])
+    for path, body in (("CorLabF3/generatePdfInsuranceRule", [{"tipo": "Long", "valor": nr}, {"tipo": "Long", "valor": seq}]),
+                       ("CorLabF3/generatePdfService", [H({"NR_PRESCRICAO": nr})])):
+        try:
+            z.post(path, body)
+        except Exception as e:   # geração de PDF do laudo: não decide a aprovação
+            print(f"  {tag}: aviso {path.split('/')[-1]}: {e}")
+    x = _item_atual(t, seq)
+    st1 = (x or {}).get("IE_STATUS_ATEND")
+    if st1 != 35:
+        print(f"  {tag}: depois de aprovar o status ficou {st1} (esperado 35) - parei, não liberei"); return f"aprovado? status {st1}"
+    print(f"  {tag}: aprovado (status 35)")
+    # --- Liberar exame (HAR: GET_DT_DIGITAL_SIGNATURE -> 28570 'L' -> [Ok] -> 33275 -> updateResultLaboratorio)
+    z.post("CorLabF3/executaConsultaPadraoAsHashMap237079", [H({"NR_SEQ_RESULTADO_P": seq_res, "NR_SEQ_GRUPO_P": None})])
+    c = _cons_txt(z.post("CorLabF3/executaProcedurePadrao28570", [H({"NR_PRESCRICAO_P": nr, "NR_SEQ_PRESCR_P": seq, "IE_OPCAO_P": "L",
+                                                                      "CD_PERFIL_ATIVO_P": perfil})]))
+    if c:
+        print(f"  {tag}: consistência na liberação: {c} - parei (ficou aprovado, status 35, sem liberar)"); return "aprovado, consistência na liberação"
+    r3 = z.post("CorLabF3/executaProcedurePadrao33275", [H({"NR_PRESCRICAO_P": nr, "NR_SEQUENCIA_P": seq, "NM_USUARIO_P": user})])
+    msgs = {k: v for k, v in (r3 or {}).items() if (v.get("valor") if isinstance(v, dict) else v)} if isinstance(r3, dict) else {}
+    if msgs:
+        print(f"  {tag}: liberação respondeu {msgs} - parei, confira na tela")
+    z.post("CorLabF3/updateResultLaboratorio", [{"tipo": "long", "valor": nr}, {"tipo": "ArrayList", "valor": [seq]}])
+    x = _item_atual(t, seq)
+    st2 = (x or {}).get("IE_STATUS_ATEND")
+    if st2 == LIBERADO_STATUS:
+        print(f"  {tag}: LIBERADO [{desc}] | releitura status {st2} ok"); return "liberado (30 -> 40)"
+    print(f"  {tag}: depois de liberar o status ficou {st2} (esperado 40) - VERIFICAR na tela"); return f"status {st2} após liberar"
+
+
+def cmd_liberar(z, atend, exames, dry):
+    """Aprova e libera, um por vez, os exames pedidos (nunca 'Liberar todos')."""
+    data, telas = abrir_telas(z, atend, write=not dry)
+    if not telas:
+        print("Nenhum exame em Digitação (30) para este atendimento."); return []
+    rel = []
+    vistos = set()
+    for chave in exames:
+        hit = achar_item_digitacao(telas, chave.strip())
+        if not hit:
+            print(f"  {chave}: não existe neste atendimento - ignorado"); rel.append((chave, "não encontrado")); continue
+        t, it = hit
+        if (t.nr, it["NR_SEQ_PRESCR"]) in vistos:
+            continue
+        vistos.add((t.nr, it["NR_SEQ_PRESCR"]))
+        print(f"== {it['CD_EXAME']} — {it['NM_EXAME'].strip()} (prescrição {t.nr})")
+        try:
+            res = aprovar_liberar_um(z, t, it, dry)
+        except Exception as e:
+            print(f"  {it['CD_EXAME']}: ERRO {e} - parei, não sigo para os próximos"); rel.append((it["CD_EXAME"], f"erro: {e}")); break
+        rel.append((it["CD_EXAME"], res))
+        if not dry and not res.startswith("liberado") and not res.startswith("ignorado") and res not in ("sem resultado", "bloqueado externo"):
+            print("  parei: não sigo para os próximos exames depois de um aviso/erro"); break
+    print("Resumo: " + "; ".join(f"{k}: {v}" for k, v in rel))
+    return rel
+
+
 def gaso_sub(vo, opt):
     for x in vo["subExams"]:
         if x["nrSeqExame"] == vo["exam"]["nrSeqExame"]: continue
@@ -4118,6 +4237,10 @@ def main():
     d.add_argument("--de", help="início DT_PRESCRICAO DD/MM/AAAA[ HH:MM]")
     d.add_argument("--ate", help="fim DT_PRESCRICAO DD/MM/AAAA[ HH:MM]")
     le = sp.add_parser("ler"); le.add_argument("atendimento", type=int)
+    lb = sp.add_parser("liberar", help="aprova e libera UM exame por vez (só status 30 com resultado salvo; nunca sorologia externa; nunca Liberar todos)")
+    lb.add_argument("atendimento", type=int)
+    lb.add_argument("--exame", action="append", required=True, help="SIGLA do exame; repita para vários (liberados um de cada vez)")
+    lb.add_argument("--dry-run", action="store_true", help="só mostra o que faria, sem enviar nada")
     r = sp.add_parser("resultado"); r.add_argument("atendimento", type=int)
     r.add_argument("--exame", action="append", required=True, help="SIGLA=valor ou SIGLA.campo=valor, ex.: TGO=20.7, BILI.total=0.64")
     r.add_argument("--dry-run", action="store_true"); r.add_argument("--forcar", action="store_true")
@@ -4238,6 +4361,8 @@ def main():
         cmd_digitacao(z, a.atendimento, a.dry_run, a.desde, a.de, a.ate)
     elif a.cmd == "ler":
         cmd_ler(z, a.atendimento)
+    elif a.cmd == "liberar":
+        cmd_liberar(z, a.atendimento, a.exame, a.dry_run)
     elif a.cmd == "resultado":
         cmd_resultado(z, a.atendimento, a.exame, a.dry_run, a.forcar, a.dump_payload)
     elif a.cmd == "hemo":

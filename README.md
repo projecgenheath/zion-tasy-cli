@@ -30,7 +30,7 @@ CLI em Python para operar o módulo de Laboratório do **Zion / Philips Tasy 5.0
 - relê os valores depois de salvar e compara com o que foi enviado;
 - **confere** todos os exames liberados do dia (erros de digitação e resultados críticos) — só leitura.
 
-> ⚠️ O CLI **nunca libera** resultado. Ele só salva. Quem libera/laudo é sempre o profissional, pelo sistema.
+> ⚠️ `resultado`/`hemo`/`gaso` **só salvam**. Liberar é um passo separado e explícito (`liberar`), **um exame por vez**, e só para exame **validado como coerente** com o histórico/PEP e **dentro da referência**. Nunca "Liberar todos".
 
 > ⚠️ **sorologia ≠ teste rápido.** Sorologias (Toxoplasmose IgG/IgM, Anti-HCV, HBsAg, CMV, Rubéola, Sorologia HIV 1/2, etc.) vão para **laboratório externo** — o CLI **recusa** qualquer digitação nelas (nem `--forcar` libera). Testes rápidos (`TRTOXO`, `HIV`, `TRS`, `TRHCV`, …) continuam normais.
 
@@ -213,6 +213,22 @@ python3 zion.py hemo 123456 --rbc 4.04 --hgb 13.3 --hct 36 --vcm 89.1 --hcm 32.8
   --wbc 14.06 --neu 82.1 --lym 11.9 --mon 5.6 --eos 0.3 --bas 0.1 --plt 174 --vpm 11.7 --dry-run
 ```
 
+### `liberar AT --exame SIGLA [--exame SIGLA ...] [--dry-run]`
+Aprova e libera **um exame por vez**, com as mesmas chamadas da tela (botão direito no exame > *Aprovar exame* > Ok; botão direito > *Liberar exame* > Ok). Nunca usa *Liberar todos*.
+
+**Regra:** só libere o exame que foi **validado como coerente** com os resultados anteriores e/ou a evolução clínica do PEP (`historico AT`) **e** que esteja **dentro da referência**. Incoerente, discordante ou fora da referência → fica só digitado (status 30) e avise o usuário.
+
+- Só age em exame em **Digitação (30)** com **resultado salvo** (não vazio); outros status são ignorados.
+- **Nunca** age em sorologia/exame de laboratório externo (mesma trava de `resultado`).
+- Vários `--exame` são processados **um de cada vez** (aprovar → liberar → reler); no primeiro aviso/erro o CLI para e não segue para os próximos.
+- Sequência (CorLabF3): aprovar = `executaFunctionPadrao4313` (deve dar `S`) → `executaProcedurePadrao28570` (`IE_OPCAO_P=A`) → `executaProcedurePadrao113` → `executaConsultaPadraoAsHashMap286014` → `aprovarExame` (modo 1, `IE_EXAME_APROV=S`) → `approvedReportUpdate` → `aprovarExame` (modo 3) → `criarPDF` → status **35**; liberar = `executaProcedurePadrao28570` (`IE_OPCAO_P=L`) → `executaProcedurePadrao33275` → `updateResultLaboratorio` → status **40**. Qualquer `DS_CONSISTENCIA_P` preenchido para o fluxo.
+- Depois de liberar, relê e confirma o **status 40**. Se ficar em 35 (aprovado, não liberado), o CLI avisa: confira na tela.
+```bash
+python3 zion.py historico 123456 --exame VDRL     # validar antes
+python3 zion.py liberar 123456 --exame VDRL --dry-run
+python3 zion.py liberar 123456 --exame VDRL
+```
+
 ## Histórico do paciente (só leitura) — `historico`
 
 Todo resultado digitado (normal **ou** alterado, qualquer exame) deve ser comparado com os
@@ -312,7 +328,7 @@ Cada exame do Tasy recebe **só o PDF dele**:
 
 ## Segurança
 
-- **Nunca libera** resultados; só salva.
+- Só `liberar` libera, **um exame por vez**, e só exame validado como coerente (histórico/PEP) e dentro da referência; os demais comandos só salvam.
 - Rode sempre `--dry-run` antes de salvar.
 - Depois de salvar, o CLI relê e compara; confira a releitura.
 - Avisos de valor fora da referência / consistência / eTFG são esperados e **não** cancelam o save.
