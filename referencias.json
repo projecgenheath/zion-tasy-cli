@@ -159,7 +159,7 @@
     {"de": "0d", "ate": "5m", "min": 1.5, "max": 2.2},
     {"de": "5m", "ate": "6a", "min": 1.7, "max": 2.3},
     {"de": "6a", "ate": "13a", "min": 1.7, "max": 2.1},
-    {"de": "18a", "min": 1.7, "max": 2.4}]},
+    {"de": "13a", "min": 1.7, "max": 2.4}]},
   {"id": "lipase", "nome": "Lipase", "siglas": ["LIPA", "LIP", "LIPAS"], "nomes": ["lipase"], "excluir": [], "campo": [], "unidade": "U/L",
    "faixas": [
     {"min": 13, "max": 60}]},

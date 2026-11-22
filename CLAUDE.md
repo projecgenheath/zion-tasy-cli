@@ -184,11 +184,10 @@ A conferência (`liberar`, `lote conferir`, `historico`) decide "dentro/fora da 
 - Ureia < 1 ano: 9–41 para todos (a faixa "prematuro 6–54" não é usada: o CLI não sabe se é prematuro; 9–41 é mais restrita).
 - Ferro: RN = até 27 dias; criança < 7 anos = 28 dias a 6 anos; criança > 7 anos = 7 a 17 anos; adulto (homem/mulher) = 18 anos ou mais.
 - Colesterol, HDL e triglicérides: adulto = 20 anos ou mais.
-- Cálcio: < 1 ano; 1–18 anos; 19 anos ou mais. Magnésio: 0–4 meses (inclui < 1 mês) 1,5–2,2; 5 meses–5 anos; 6–12 anos; adulto = 18 anos ou mais.
+- Cálcio: < 1 ano; 1–18 anos; 19 anos ou mais. Magnésio: 0–4 meses (inclui < 1 mês) 1,5–2,2; 5 meses–5 anos; 6–12 anos; 13 anos ou mais = faixa adulta 1,7–2,4.
 - Sódio: 136–145 até 90 anos (inclui < 18 anos); 91 anos ou mais: 132–146.
 - Fosfatase alcalina: adulto (19 anos ou mais) 30–120 para homem e mulher.
 - **eTFG da creatinina:** paciente < 18 anos → eTFG 0/vazio é esperado (conta como dentro). Paciente ≥ 18 anos → o Tasy calcula o eTFG quando o campo **Idade** da creatinina está preenchido; eTFG 0/vazio = `CAMPO_PENDENTE` (não libera; preencha a Idade). eTFG com valor → avaliado pela referência do Tasy (≥ 60). Idade desconhecida → não libera.
-- **Sem faixa na tabela (cai no Tasy, ou `SEM_REFERENCIA`):** magnésio 13–17 anos.
 
 **Como acrescentar ou mudar uma referência:** edite `referencias.json` (sem dado de paciente) nos dois repositórios:
 ```json
