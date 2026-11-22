@@ -1957,7 +1957,8 @@ def _imprimir_conferencia(x):
         print(f"     valores: {x['valores'][:200]}")
     ref = x.get("ref") or {}
     for rot, k in (("dentro da referência", "dentro"), ("FORA da referência", "fora"),
-                   ("qualitativo alterado", "alterado"), ("sem referência", "sem_ref")):
+                   ("DIVERGÊNCIA Tasy × tabela", "divergente"),
+                   ("qualitativo alterado", "alterado"), ("sem referência", "sem_ref"), ("nota da referência", "notas")):
         if ref.get(k):
             print(f"     {rot}: " + "; ".join(ref[k][:6]))
     for h in (x.get("historico") or [])[:4]:
@@ -4046,9 +4047,19 @@ def cmd_historico(z, atend, exames=None, dias=HIST_DIAS_PADRAO, notas=1, as_json
         h = hpre.get((t.nr, it["NR_SEQ_PRESCR"])) or historico_exame(z, it, vo, atend, dias, cache, nr=t.nr)
         h["prescricao"] = t.nr
         hs.append(h)
+        try:
+            av = _ref_avaliar(vo)
+        except Exception as e:
+            av = {"notas": [f"erro ao avaliar referência: {e}"]}
+        h["referencia"] = av
         if not as_json:
             print(f"\n-- prescr {t.nr} | fonte: {h['fonte']}")
             print_historico(h, compacto=False, max_ant=12)
+            for rot, k in (("referência: dentro", "dentro"), ("referência: FORA", "fora"),
+                           ("referência: DIVERGÊNCIA Tasy × tabela", "divergente"),
+                           ("referência: sem faixa", "sem_ref"), ("referência: nota", "notas")):
+                if av.get(k):
+                    print(f"    {rot}: " + "; ".join(av[k][:6]))
             if h["sem_historico"]:
                 print(f"    AVISO: sem resultado anterior para {h['exame']}")
     pf = next((str(n.get("CD_PESSOA_FISICA")) for t, it in alvos for (_g, n) in [t.nodes.get(it.get("NR_SEQ_PRESCR"), (None, {}))] if n.get("CD_PESSOA_FISICA")), None)
@@ -5091,9 +5102,192 @@ def _hist_qual_anteriores(z, atend, cd, nr_atual, dias, cache, limite_presc=HIST
     return out
 
 
+# ---------- tabela de referência do laboratório (DB Diagnósticos): referencias.json ----------
+# Regra (conferência usada por liberar / lote conferir / historico):
+#  - Tasy tem faixa numérica no campo (qtMinima/qtMaxima ou prMinimo/prMaximo) E a tabela tem faixa
+#    para o sexo/idade: o valor precisa estar dentro das DUAS. Se uma diz dentro e a outra fora ->
+#    REF_DIVERGENTE (não libera, mostra as duas faixas).
+#  - Tasy sem faixa: usa a tabela.
+#  - Tabela sem faixa para o sexo/idade (ou sexo/idade desconhecidos): usa a do Tasy; sem nenhuma -> SEM_REFERENCIA.
+#  - Unidade do Tasy diferente da tabela: a tabela é ignorada naquele campo (avisado).
+REFERENCIAS_ARQ = os.path.join(os.path.dirname(os.path.abspath(__file__)), "referencias.json")
+_REF_TAB = None
+_REF_SUB_IGNORAR = ("observ", "idade", "etfg", "filtracao", "volume", "fracoes")
+_UNID_RE = re.compile(r"(?<![a-z])(mg/dl|mg/l|g/dl|g/l|u/l|ui/l|mmol/l|meq/l|ug/dl|mcg/dl|µg/dl)")
+
+
+def _ref_tabela_carregar():
+    global _REF_TAB
+    if _REF_TAB is None:
+        try:
+            d = json.load(open(REFERENCIAS_ARQ, encoding="utf-8"))
+            tab = []
+            for e in d.get("exames") or []:
+                e = dict(e)
+                e["_siglas"] = {str(s).upper() for s in e.get("siglas") or []}
+                e["_nomes"] = [_slug(s) for s in e.get("nomes") or []]
+                e["_excluir"] = [_slug(s) for s in e.get("excluir") or []]
+                e["_campo"] = [_slug(s) for s in e.get("campo") or []]
+                e["_campo_excl"] = [_slug(s) for s in e.get("campo_excluir") or []]
+                e["_gaso"] = {_slug(s) for s in e.get("gaso") or []}
+                e["_unico"] = {str(s).upper() for s in e.get("campo_unico_siglas") or []}
+                tab.append(e)
+            _REF_TAB = tab
+        except FileNotFoundError:
+            sys.stderr.write(f"AVISO: {REFERENCIAS_ARQ} não encontrado — conferência só com a referência do Tasy\n")
+            _REF_TAB = []
+    return _REF_TAB
+
+
+def _unid_norm(u):
+    u = _sem_acento(str(u or "")).lower().replace(" ", "").replace("µ", "u").replace("mcg", "ug").replace("ui/l", "u/l")
+    return u.replace("meq/l", "mmol/l")   # Na/K: mEq/L = mmol/L (íons monovalentes)
+
+
+def _idade_partes(nasc, coleta):
+    """(dias, meses, anos) completos entre nascimento e coleta (datas locais)."""
+    if not nasc or not coleta or coleta < nasc:
+        return None
+    dias = (coleta - nasc).days
+    meses = (coleta.year - nasc.year) * 12 + coleta.month - nasc.month - (coleta.day < nasc.day)
+    anos = coleta.year - nasc.year - ((coleta.month, coleta.day) < (nasc.month, nasc.day))
+    return {"d": dias, "m": meses, "a": anos}
+
+
+def _idade_txt(idade):
+    if not idade:
+        return "idade desconhecida"
+    if idade["a"] >= 2:
+        return f"{idade['a']} anos"
+    if idade["m"] >= 1:
+        return f"{idade['m']} meses"
+    return f"{idade['d']} dias"
+
+
+def _limite_ok(idade, lim, lado):
+    if not lim:
+        return True
+    n, u = int(str(lim)[:-1]), str(lim)[-1]
+    return idade[u] >= n if lado == "de" else idade[u] < n
+
+
+def _faixa_txt(f):
+    lo, hi = f.get("min"), f.get("max")
+    if lo is not None and hi is not None:
+        return f"{vtxt(lo)}–{vtxt(hi)}"
+    if hi is not None:
+        return ("< " if f.get("max_excl") else "≤ ") + vtxt(hi)
+    if lo is not None:
+        return ("> " if f.get("min_excl") else "≥ ") + vtxt(lo)
+    return "-"
+
+
+def _faixa_dentro(v, f):
+    lo, hi = f.get("min"), f.get("max")
+    if lo is not None and (v <= lo if f.get("min_excl") else v < lo):
+        return False
+    if hi is not None and (v >= hi if f.get("max_excl") else v > hi):
+        return False
+    return True
+
+
+def _ref_paciente(vo):
+    """Sexo (M/F/None), idade na coleta, material do lactato (venoso/arterial)."""
+    sexo = str(vo.get("sexo") or "").upper()[:1] or None
+    sexo = sexo if sexo in ("M", "F") else None
+    nasc = parse_nasc(vo.get("dtNascimento"))
+    col = parse_nasc(vo.get("dtColeta")) or dt.datetime.now(TZ).date()
+    return sexo, _idade_partes(nasc, col)
+
+
+def _lactato_material(vo):
+    cd = str(vo.get("cdExame") or "").upper()
+    txt = _slug(f"{(vo.get('exam') or {}).get('nmExame') or ''} {vo.get('dsMaterialExame') or ''} {vo.get('dsMaterialEspecial') or ''}")
+    if cd in ("GASA",) or "arterial" in txt:
+        return "arterial", "arterial"
+    if cd in ("GASV",) or "venos" in txt:
+        return "venoso", "venoso"
+    return "arterial", "material não identificado: usado arterial (mais restrito)"
+
+
+def _ref_entrada(vo, x):
+    """Entrada da tabela que vale para este campo (ou None)."""
+    tab = _ref_tabela_carregar()
+    if not tab:
+        return None
+    cd = str(vo.get("cdExame") or "").upper()
+    nm_ex = _slug((vo.get("exam") or {}).get("nmExame") or "")
+    mat = _slug(f"{vo.get('dsMaterialExame') or ''} {vo.get('dsMaterialEspecial') or ''}")
+    sl = _slug(x.get("nmExame") or "")
+    if not sl or any(k in sl for k in _REF_SUB_IGNORAR):
+        return None
+    if cd in GASO_SIGLAS or "gasometria" in nm_ex:
+        return next((e for e in tab if sl in e["_gaso"]), None)
+    cands = [e for e in tab if cd in e["_siglas"]]
+    if not cands:
+        cands = [e for e in tab if any(k and k in nm_ex for k in e["_nomes"])]
+    for e in cands:
+        if any(k and (k in nm_ex or k in mat or k in sl) for k in e["_excluir"]):
+            continue
+        campo = [] if cd in e["_unico"] else e["_campo"]
+        if campo:
+            if (any(c in sl for c in campo) and any(k in sl for k in e["_nomes"])
+                    and not any(k in sl for k in e["_campo_excl"])):
+                return e
+            continue
+        principais = [s for s in vo.get("subExams") or []
+                      if s.get("ieFormatoResultado") in ("V", "DV", "P")
+                      and not any(k in _slug(s.get("nmExame") or "") for k in _REF_SUB_IGNORAR)]
+        if any(k in sl for k in e["_nomes"]) or (len(principais) == 1 and principais[0] is x):
+            return e
+    return None
+
+
+def _ref_tabela(vo, x):
+    """Faixa da tabela para o campo x: None (não se aplica) ou dict com status ok/sem_faixa/unidade."""
+    e = _ref_entrada(vo, x)
+    if not e:
+        return None
+    nome = e.get("nome") or e["id"]
+    un_tab = _unid_norm(e.get("unidade"))
+    equiv = {un_tab} | {_unid_norm(u) for u in e.get("equivalentes") or []}
+    un_tasy = _unid_norm(x.get("dsUnidadeMedida"))
+    nota_un = ""
+    if un_tasy in ("", "."):
+        m = _UNID_RE.search(_unid_norm(x.get("dsReferencia")))
+        un_tasy = _unid_norm(m.group(1)) if m else ""
+        if not un_tasy:
+            nota_un = f"; unidade não informada no Tasy, assumida {e.get('unidade')}"
+    if un_tasy and un_tasy not in equiv:
+        return {"status": "unidade", "nome": nome,
+                "motivo": f"tabela {nome} ignorada: unidade do Tasy {x.get('dsUnidadeMedida') or un_tasy} ≠ {e.get('unidade')}"}
+    sexo, idade = _ref_paciente(vo)
+    faixas = e.get("faixas") or []
+    precisa_sexo = any(f.get("sexo") for f in faixas)
+    precisa_idade = any(f.get("de") or f.get("ate") for f in faixas)
+    mat_txt = ""
+    if any(f.get("material") for f in faixas):
+        mat, mat_txt = _lactato_material(vo)
+        faixas = [f for f in faixas if f.get("material") in (None, mat)]
+    if precisa_sexo and not sexo:
+        return {"status": "sem_faixa", "nome": nome, "motivo": f"{nome}: sexo do paciente desconhecido"}
+    if precisa_idade and not idade:
+        return {"status": "sem_faixa", "nome": nome, "motivo": f"{nome}: idade do paciente desconhecida"}
+    hit = [f for f in faixas if f.get("sexo") in (None, sexo)
+           and (not idade or (_limite_ok(idade, f.get("de"), "de") and _limite_ok(idade, f.get("ate"), "ate")))]
+    if not hit:
+        return {"status": "sem_faixa", "nome": nome,
+                "motivo": f"{nome}: tabela sem faixa para {sexo or '?'} {_idade_txt(idade)}"}
+    f = hit[0]
+    quem = " ".join(s for s in (sexo if precisa_sexo else "", _idade_txt(idade) if precisa_idade else "", mat_txt) if s)
+    return {"status": "ok", "nome": nome, "faixa": f, "unidade": e.get("unidade"),
+            "txt": f"{_faixa_txt(f)} {e.get('unidade')} (tabela DB{', ' + quem if quem else ''}{nota_un})"}
+
+
 def _ref_avaliar(vo):
-    """Classifica cada campo com valor: dentro, fora, qualitativo alterado ou sem referência determinável."""
-    fora, alterado, sem_ref, dentro = [], [], [], []
+    """Classifica cada campo com valor: dentro, fora, qualitativo alterado, sem referência ou
+    divergente (Tasy × tabela do laboratório). Ver referencias.json e o comentário acima."""
+    fora, alterado, sem_ref, dentro, diverg, notas = [], [], [], [], [], []
     for x in vo.get("subExams") or []:
         c = _campo_resultado(x)
         if not c:
@@ -5109,9 +5303,33 @@ def _ref_avaliar(vo):
             else:
                 lo, hi = _num_or_none(x.get("qtMinima")), _num_or_none(x.get("qtMaxima"))
             faixa = f"{vtxt(lo) if lo is not None else '-'}–{vtxt(hi) if hi else '-'}"
-            if not lo and not hi:
-                sem_ref.append(f"{nm} {vtxt(v)} (sem faixa numérica)")
-            elif (lo is not None and lo != 0 and v < lo) or (hi and v > hi):
+            tasy_tem = bool(lo or hi)
+            tasy_dentro = None
+            if tasy_tem:
+                tasy_dentro = not ((lo is not None and lo != 0 and v < lo) or (hi and v > hi))
+            tab = None
+            try:
+                tab = _ref_tabela(vo, x)
+            except Exception as e:   # tabela nunca derruba a conferência
+                notas.append(f"{nm}: erro na tabela de referência ({e})")
+            tab_motivo = None
+            if tab and tab["status"] in ("unidade", "sem_faixa"):
+                notas.append(tab["motivo"])
+                tab_motivo = tab["motivo"]
+                tab = None
+            if tab:
+                tab_dentro = _faixa_dentro(v, tab["faixa"])
+                if tasy_tem and tasy_dentro != tab_dentro:
+                    diverg.append(f"{nm} {vtxt(v)}: Tasy {faixa} diz {'dentro' if tasy_dentro else 'FORA'}; "
+                                  f"tabela {tab['txt']} diz {'dentro' if tab_dentro else 'FORA'}")
+                elif not tab_dentro:
+                    fora.append(f"{nm} {vtxt(v)} fora de {tab['txt']}" + (f" e do Tasy {faixa}" if tasy_tem else ""))
+                else:
+                    dentro.append(f"{nm} {vtxt(v)} (ref {tab['txt']}" + (f"; Tasy {faixa}" if tasy_tem else "") + ")")
+                continue
+            if not tasy_tem:
+                sem_ref.append(f"{nm} {vtxt(v)} (" + (tab_motivo or "sem faixa numérica no Tasy nem na tabela") + ")")
+            elif not tasy_dentro:
                 fora.append(f"{nm} {vtxt(v)} fora de {faixa}")
             else:
                 dentro.append(f"{nm} {vtxt(v)} (ref {faixa})")
@@ -5130,7 +5348,8 @@ def _ref_avaliar(vo):
             dentro.append(f"{nm} {v} (ref {x.get('dsReferencia')})")
         else:
             sem_ref.append(f"{nm} {v}" + (f" (ref {x.get('dsReferencia')})" if rs else " (sem referência determinável)"))
-    return {"fora": fora, "alterado": alterado, "sem_ref": sem_ref, "dentro": dentro}
+    return {"fora": fora, "alterado": alterado, "sem_ref": sem_ref, "dentro": dentro,
+            "divergente": diverg, "notas": notas}
 
 
 def _ref_fora(vo):
@@ -5196,6 +5415,9 @@ def _classificar_resultado(av, incoer, hist_ok, pep, motivo_notas=None, exige_co
         return "FORA_REFERENCIA", "fora da referência: " + "; ".join(av["fora"][:4])
     if av["alterado"]:
         return "QUALITATIVO_ALTERADO", "qualitativo alterado (REAGENTE/Positivo): " + "; ".join(av["alterado"][:4])
+    if av.get("divergente"):
+        return ("REF_DIVERGENTE", "referência do Tasy e tabela do laboratório divergem para este valor: "
+                + "; ".join(av["divergente"][:4]))
     if av["sem_ref"] or not av["dentro"]:
         detalhe = "; ".join(av["sem_ref"][:4]) or "nenhum campo com referência conhecida"
         if pep:
@@ -5345,7 +5567,7 @@ def lote_conferir(z, a, path, itens):
     print(f"  Conferência gravada em {cp} (dados de paciente: arquivo local, permissão 600 — nunca commitar)")
     print("  Etapa 4: `lote liberar` libera COERENTE e DENTRO_REFERENCIA (hemo/gaso/bioquímica dentro da referência, mesmo sem histórico/PEP).")
     print("  PEP_A_CONFIRMAR (testes rápidos/tipagens sem resultado anterior igual, ou exame sem referência com trecho no PEP) só com \"pep_ok\".")
-    print("  Não libera: FORA_REFERENCIA, QUALITATIVO_ALTERADO, INCOERENTE, SEM_REFERENCIA, EXTERNO, SEM_RESULTADO, FORA_DIGITACAO.")
+    print("  Não libera: FORA_REFERENCIA, REF_DIVERGENTE, QUALITATIVO_ALTERADO, INCOERENTE, SEM_REFERENCIA, EXTERNO, SEM_RESULTADO, FORA_DIGITACAO.")
     return conf
 
 

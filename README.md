@@ -48,7 +48,7 @@ Siga todas, sempre. Se uma regra do usuário for mais restrita, vale a do usuár
 | Tipo de exame | Libera quando | Senão |
 |---|---|---|
 | **Testes rápidos** (HIV, VDRL, TRS/sífilis, hepatites TR, TRTOXO, qualquer sigla `TR*`) e **tipagem / fator Rh / Coombs** (GP-TIP, TIP, ABO, COOI, COOD, CI, CD) | Resultado anterior **igual** **ou** confirmação lida no PEP. Vale também para NÃO REAGENTE / Negativo. | Só digitar e salvar. Não liberar. Avisar o usuário. |
-| **Hemograma, gasometria, bioquímica** (HC, GASV/GASA, CREA, UREA, NA+, K+, TGO, PCR, TAP…) | Dentro da referência, mesmo sem resultado anterior e sem PEP. | Fora da referência ou incoerente com o anterior/PEP: só digitar e salvar. Não aprovar, não liberar. Avisar o usuário. |
+| **Hemograma, gasometria, bioquímica** (HC, GASV/GASA, CREA, UREA, NA+, K+, TGO, PCR, TAP…) | Dentro da referência (Tasy e tabela do laboratório, seção 3A), mesmo sem resultado anterior e sem PEP. | Fora da referência ou incoerente com o anterior/PEP: só digitar e salvar. Não aprovar, não liberar. Avisar o usuário. |
 | **Sorologia externa** (DB Diagnósticos), exame **sem resultado**, exame **fora de Digitação** | **Nunca.** | — |
 - Um exame por vez. **Nunca** "Liberar todos".
 - Depois de liberar, confirme status 40 na saída do CLI.
@@ -157,6 +157,7 @@ Vários atendimentos com comandos avulsos: rode cada etapa para todos (`digitaca
 | `COERENTE` | De acordo com o resultado anterior (hemo/gaso/bioq dentro da referência; TR/tipagem igual ao anterior) | **Sim** | `lote liberar` libera |
 | `PEP_A_CONFIRMAR` | TR/tipagem sem anterior igual (inclusive NR/negativo), ou exame sem referência com trecho no PEP | **Só com `pep_ok`** | Ler o trecho do PEP. Confirma → sigla em `pep_ok`. Não confirma ou não há trecho → não liberar e avisar |
 | `FORA_REFERENCIA` | Valor fora da referência | Não | Fica digitado. Avisar com o valor e a referência |
+| `REF_DIVERGENTE` | Faixa do Tasy e tabela do laboratório (`referencias.json`) discordam para este valor | Não | Fica digitado. Avisar com as duas faixas (seção 3A) |
 | `QUALITATIVO_ALTERADO` | Qualitativo alterado (REAGENTE/Positivo) | Não | Fica digitado. Avisar |
 | `INCOERENTE` | Diverge do anterior (mudança > 50%, passou a crítico, qualitativo diferente) ou o PEP diz o contrário | Não | Fica digitado. Avisar com o motivo; conferir se houve erro de digitação |
 | `SEM_REFERENCIA` | Sem referência determinável e sem trecho no PEP | Não | Fica digitado. Avisar |
@@ -164,10 +165,50 @@ Vários atendimentos com comandos avulsos: rode cada etapa para todos (`digitaca
 | `SEM_RESULTADO` | Nada salvo no exame | Nunca | Digitar (etapa 2) ou avisar que falta no papel |
 | `FORA_DIGITACAO` | Status diferente de 30 | Nunca | Ver `listar`; colocar em Digitação se o usuário pedir |
 | `NAO_ENCONTRADO` | Sigla do arquivo não está em Digitação no atendimento | Nunca | Conferir a sigla/atendimento e avisar |
-- `pep_ok` só vale para `PEP_A_CONFIRMAR`. Não destrava `FORA_REFERENCIA`, `INCOERENTE`, `QUALITATIVO_ALTERADO`, `SEM_REFERENCIA` nem as classes "nunca".
+- `pep_ok` só vale para `PEP_A_CONFIRMAR`. Não destrava `FORA_REFERENCIA`, `REF_DIVERGENTE`, `INCOERENTE`, `QUALITATIVO_ALTERADO`, `SEM_REFERENCIA` nem as classes "nunca".
 - Com `historico` (avulso) não há classe: aplique você a mesma tabela lendo os alertas (`AVISO: sem resultado anterior`, `mudança grande`, `passou a faixa crítica`, `AVISO: sem evolução clínica compatível`) e a referência.
 
 Listas de siglas no código (`zion.py`): `SIGLAS_TR_TIPAGEM` (+ qualquer sigla `TR*` e nomes com "teste rápido", "tipagem", "coombs", "fator rh", "grupo/tipo sanguíneo", "vdrl", "sífilis"), `SIGLAS_HEMO`, `GASO_SIGLAS`, `SIGLAS_BIOQUIMICA`, `EXAMES_EXTERNOS_BLOQUEADOS`.
+
+## 3A. Valores de referência (Tasy + tabela do laboratório)
+A conferência (`liberar`, `lote conferir`, `historico`) decide "dentro/fora da referência" assim, campo a campo:
+1. **Faixa do Tasy:** `qtMinima`/`qtMaxima` (ou `prMinimo`/`prMaximo`) do campo, como já era.
+2. **Tabela do laboratório (DB Diagnósticos):** arquivo `referencias.json`, ao lado do `zion.py`. Faixas por **sexo** e **idade na data da coleta** (dias/meses/anos completos), calculadas pela data de nascimento e pelo sexo do paciente no Tasy.
+3. **Como combina:**
+   | Situação | Resultado |
+   |---|---|
+   | Tasy tem faixa e a tabela tem faixa | o valor precisa estar dentro das **duas**. As duas dizem dentro → dentro; as duas dizem fora → `FORA_REFERENCIA`; uma diz dentro e a outra fora → **`REF_DIVERGENTE`** (não libera; mostra as duas faixas) |
+   | Só a tabela tem faixa | usa a tabela |
+   | Só o Tasy tem faixa (tabela sem faixa para o sexo/idade, ou exame fora da tabela) | usa o Tasy |
+   | Nenhuma das duas, ou sexo/idade desconhecidos e a faixa depende deles | `SEM_REFERENCIA` (não libera) |
+   | Unidade do campo no Tasy diferente da tabela | a tabela é **ignorada** naquele campo (aviso na saída). Unidade vazia ou "." no Tasy: procura a unidade no texto da referência; se não achar, usa a da tabela e avisa. mEq/L = mmol/L (Na, K); µg/dL = ug/dL |
+4. A saída mostra a faixa usada e a fonte, por exemplo `Creatinina 0.8 (ref 0.6–1.1 mg/dL (tabela DB, F 30 anos); Tasy 0.31–0.92)`.
+
+**Exames na tabela** (sigla do Tasy neste hospital → faixa): Ácido úrico `AURS`; Ureia `UREA`; Creatinina `CREA`; Bilirrubina total/direta/indireta `BILI` (campos); TGO `TGO`; TGP `TGP`; Gama GT `GGT`; PCR `PCRP` (só se a unidade for mg/L); DHL `LDH2`; Albumina `ALBU`; Fosfatase alcalina `FAL`; Fósforo `P+`; Ferro `FERO`; Cálcio total `CA+`; Magnésio `MG+`; Lipase `LIPA`; Amilase `AMIL`; Lactato `LACT`; Sódio `NA+`; Potássio `K+`; Glicose `GLI`; Colesterol total, HDL, Triglicérides, CPK (por sigla/nome quando existirem). Na gasometria (GASV/GASA): Na, K, glicose e lactato pelo nome do campo.
+
+**Decisões de interpretação** (editáveis no `referencias.json`):
+- Limites de idade: `de` inclusivo, `ate` exclusivo, em idade completa. Ex.: "18–60 anos" = 18 a 60 anos completos; "61–90" = 61 a 90; ">90" = 91 ou mais. "RN até 4 dias" = 0 a 4 dias; "5 dias–3 anos" = 5 dias a 3 anos completos.
+- "Inferior a X" = valor < X (X já é fora). "Superior a X" (HDL) = valor > X.
+- Creatinina mulher 18–60 anos: 0,60–1,10. Glicose: 70–99 (jejum). Triglicérides: limite **com jejum**. PCR: < 5,00 mg/L.
+- Lactato: venoso 0,5–2,2 / arterial 0,5–1,6, pelo exame (GASV/GASA) ou pelo nome/material ("arterial"/"venoso"); sem identificação → arterial (mais restrito).
+- Bilirrubina direta < 0,20 e indireta < 1,10 em qualquer idade (no recém-nascido a indireta quase sempre sai fora → fica só digitado).
+- Ureia < 1 ano: 9–41 para todos (a faixa "prematuro 6–54" não é usada: o CLI não sabe se é prematuro; 9–41 é mais restrita).
+- Ferro: RN = até 27 dias; criança < 7 anos = 28 dias a 6 anos; criança > 7 anos = 7 a 17 anos; adulto (homem/mulher) = 18 anos ou mais.
+- Colesterol, HDL e triglicérides: adulto = 20 anos ou mais.
+- Cálcio: < 1 ano; 1–18 anos; 19 anos ou mais. Magnésio: 1–4 meses; 5 meses–5 anos; 6–12 anos; adulto = 18 anos ou mais.
+- **Sem faixa na tabela (cai no Tasy, ou `SEM_REFERENCIA`):** fosfatase alcalina **homem adulto** (a tabela só traz "Adultos 30–120" para mulher); magnésio < 1 mês e 13–17 anos; sódio < 18 anos.
+
+**Como acrescentar ou mudar uma referência:** edite `referencias.json` (sem dado de paciente) nos dois repositórios:
+```json
+{"id": "exemplo", "nome": "Nome do exame", "siglas": ["SIGLA_DO_TASY"], "nomes": ["palavradonomedoexame"],
+ "excluir": ["urina"], "campo": [], "unidade": "mg/dL",
+ "faixas": [{"sexo": "M", "de": "18a", "ate": "61a", "min": 1.0, "max": 2.0},
+            {"sexo": "F", "de": "18a", "min": 0.5, "max_excl": true, "max": 1.5}]}
+```
+- `siglas`: CD_EXAME do Tasy. `nomes`: pedaço do nome do exame sem acento/espaço (usado se a sigla não bater). `excluir`: palavras no nome/material/campo que impedem o uso (urina, clearance…).
+- `campo`: para exame com vários campos (ex.: `["direta"]`); vazio = campo principal. `campo_excluir`: palavras que o campo não pode ter. `gaso`: nome do campo dentro da gasometria.
+- Faixa: `sexo` M/F (sem = ambos); `de`/`ate` com `d`, `m` ou `a`; `min`/`max` inclusivos; `min_excl`/`max_excl` = estrito. `material` só para venoso/arterial.
+- A primeira faixa que servir é usada. Teste com `historico AT` ou `liberar AT --exame SIGLA --dry-run`.
 
 ## 4. Referência de comandos
 Uso: `python3 zion.py [--user USUARIO] COMANDO ...` (use `python3`). Números de atendimento = `AT`. Decimal com ponto ou vírgula (prefira ponto). `-j N` = atendimentos em paralelo (padrão 4) onde existir.
@@ -295,7 +336,7 @@ python3 zion.py historico 100001 --exame VDRL --exame HIV --notas 3
 4. Se **qualquer** exame pedido for recusado: **nada** é aprovado, o CLI imprime `Resumo: SIGLA: recusado na conferência (CLASSE)` e sai com código 1.
 5. Se todos forem liberáveis: aprova (35) e libera (40) **um exame por vez**, como na tela; no primeiro aviso/erro/consistência para e não segue. Nunca "Liberar todos".
 6. `--dry-run`: faz a conferência e mostra a decisão, sem aprovar nem liberar.
-7. `--pep-ok SIGLA`: você atesta que **leu** o trecho do PEP e ele confirma o resultado. Nunca use "por garantia". Não destrava `FORA_REFERENCIA`, `INCOERENTE`, `QUALITATIVO_ALTERADO`, `SEM_REFERENCIA`, `EXTERNO`, `SEM_RESULTADO`, `FORA_DIGITACAO`, `NAO_ENCONTRADO`.
+7. `--pep-ok SIGLA`: você atesta que **leu** o trecho do PEP e ele confirma o resultado. Nunca use "por garantia". Não destrava `FORA_REFERENCIA`, `REF_DIVERGENTE`, `INCOERENTE`, `QUALITATIVO_ALTERADO`, `SEM_REFERENCIA`, `EXTERNO`, `SEM_RESULTADO`, `FORA_DIGITACAO`, `NAO_ENCONTRADO`.
 8. Não existe opção para pular a conferência.
 - Ficou em 35 (aprovado, não liberado): avise o usuário para conferir na tela.
 ```bash
