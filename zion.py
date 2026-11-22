@@ -1950,13 +1950,40 @@ def aprovar_liberar_um(z, t, it, dry):
     print(f"  {tag}: depois de liberar o status ficou {st2} (esperado 40) - VERIFICAR na tela"); return f"status {st2} após liberar"
 
 
-def cmd_liberar(z, atend, exames, dry):
-    """Aprova e libera, um por vez, os exames pedidos (nunca 'Liberar todos')."""
+def _imprimir_conferencia(x):
+    """Mostra a conferência de um exame (classe, valores, referência, anteriores, PEP)."""
+    print(f"  conferência {x.get('sigla')}: {x.get('classe')} — {x.get('motivo')}")
+    if x.get("valores"):
+        print(f"     valores: {x['valores'][:200]}")
+    ref = x.get("ref") or {}
+    for rot, k in (("dentro da referência", "dentro"), ("FORA da referência", "fora"),
+                   ("qualitativo alterado", "alterado"), ("sem referência", "sem_ref")):
+        if ref.get(k):
+            print(f"     {rot}: " + "; ".join(ref[k][:6]))
+    for h in (x.get("historico") or [])[:4]:
+        print(f"     anterior: {h}")
+    if not x.get("historico") and x.get("classe") not in ("EXTERNO", "SEM_RESULTADO", "FORA_DIGITACAO", "NAO_ENCONTRADO"):
+        print("     anterior: nenhum resultado anterior encontrado")
+    for i in (x.get("incoerencias") or [])[:4]:
+        print(f"     incoerência: {i}")
+    for pp in (x.get("pep") or []):
+        print(f"     PEP {pp['dt']} {pp['tipo']}: {pp['trecho'][:300]}")
+
+
+def cmd_liberar(z, atend, exames, dry, pep_ok=None, dias=None):
+    """Aprova e libera, um por vez, os exames pedidos (nunca 'Liberar todos').
+
+    SEMPRE confere antes (mesma classificação do `lote conferir`, feita agora):
+    referência, resultados anteriores e PEP. Só libera COERENTE e DENTRO_REFERENCIA;
+    PEP_A_CONFIRMAR só com --pep-ok SIGLA (a IA atesta que leu o PEP e ele confirma).
+    Qualquer outra classe em qualquer exame pedido: nada é aprovado, sai com código 1.
+    Testes rápidos/tipagens/Coombs nunca passam só pela referência. Sem bypass."""
+    pep_ok = {str(s).upper().strip() for s in (pep_ok or [])}
+    dias = dias or HIST_DIAS_PADRAO
     data, telas = abrir_telas(z, atend, write=not dry)
     if not telas:
         print("Nenhum exame em Digitação (30) para este atendimento."); return []
-    rel = []
-    vistos = set()
+    rel, alvos, vistos = [], [], set()
     for chave in exames:
         hit = achar_item_digitacao(telas, chave.strip())
         if not hit:
@@ -1965,6 +1992,38 @@ def cmd_liberar(z, atend, exames, dry):
         if (t.nr, it["NR_SEQ_PRESCR"]) in vistos:
             continue
         vistos.add((t.nr, it["NR_SEQ_PRESCR"]))
+        alvos.append((t, it))
+    # --- conferência obrigatória (fresca, só leitura) antes de aprovar qualquer coisa
+    recusados = []
+    if alvos:
+        cds = list(dict.fromkeys(str(it.get("CD_EXAME") or "").upper() for _, it in alvos))
+        print(f"Conferência obrigatória antes de liberar (referência, anteriores, PEP; {dias} dias): {', '.join(cds)}")
+        conf = conferir_at(z, atend, cds, dias)
+        idx = {(x.get("prescricao"), x.get("seq")): x for x in conf.get("exames", [])}
+        for t, it in alvos:
+            cd = str(it.get("CD_EXAME") or "").upper()
+            x = idx.get((t.nr, it["NR_SEQ_PRESCR"])) or {"sigla": cd, "classe": "NAO_ENCONTRADO",
+                                                         "motivo": "conferência não encontrou este exame em Digitação"}
+            _imprimir_conferencia(x)
+            classe = x.get("classe")
+            if classe in _CLASSES_LIBERAVEIS:
+                print(f"     decisão: LIBERÁVEL ({classe})")
+            elif classe == "PEP_A_CONFIRMAR" and cd in pep_ok:
+                print(f"     decisão: LIBERÁVEL (PEP_A_CONFIRMAR com --pep-ok {cd}: a IA atestou que leu o PEP e ele confirma)")
+            else:
+                why = classe
+                if classe == "PEP_A_CONFIRMAR":
+                    why += (" — leia o trecho do PEP; só se confirmar o resultado, repita com --pep-ok " + cd)
+                print(f"     decisão: RECUSADO ({why})")
+                recusados.append((cd, f"recusado na conferência ({classe})"))
+    if recusados:
+        print("  NADA aprovado/liberado: há exame(s) recusado(s) na conferência. Libere só os liberáveis, "
+              "ou deixe digitado e avise o usuário.")
+        rel += recusados + [(str(it["CD_EXAME"]).upper(), "não processado (outro exame recusado na conferência)")
+                            for _, it in alvos if str(it["CD_EXAME"]).upper() not in {c for c, _ in recusados}]
+        print("Resumo: " + "; ".join(f"{k}: {v}" for k, v in rel))
+        raise SystemExit(1)
+    for t, it in alvos:
         print(f"== {it['CD_EXAME']} — {it['NM_EXAME'].strip()} (prescrição {t.nr})")
         try:
             res = aprovar_liberar_um(z, t, it, dry)
@@ -5330,7 +5389,9 @@ def lote_liberar(z, a, path, itens):
         sim = [x for x in sim if x["sigla"] not in ("@GASO",)]
         if sim:
             plano[e["at"]] = sim
-            jobs.append((e["at"], [["liberar", e["at"]] + [y for x in sim for y in ("--exame", x["sigla"])] + (["--dry-run"] if a.dry_run else [])]))
+            jobs.append((e["at"], [["liberar", e["at"]] + [y for x in sim for y in ("--exame", x["sigla"])]
+                                   + [y for x in sim if x["classe"] == "PEP_A_CONFIRMAR" for y in ("--pep-ok", x["sigla"])]
+                                   + ["--dias", a.dias] + (["--dry-run"] if a.dry_run else [])]))
     print(f"LOTE etapa 4 — liberar UM exame por vez, só COERENTE/DENTRO_REFERENCIA (hemo/gaso/bioquímica na referência) e PEP_A_CONFIRMAR com pep_ok (TR/tipagem), nunca sorologia externa: "
           f"{sum(len(v) for v in plano.values())} exame(s) em {len(jobs)} atendimento(s)" + (" (dry-run: nada é enviado)" if a.dry_run else ""))
     liberados = []
@@ -5389,7 +5450,7 @@ def main():
                 "  2) resultado|hemo|gaso / lote digitar   (só salvar; sem histórico/PEP)\n"
                 "  3) historico / lote conferir   (LER anteriores e PEP)\n"
                 "  4) liberar / lote liberar   (um exame por vez, só os coerentes)\n"
-                "NUNCA liberar sem ter rodado e lido a etapa 3. `liberar` avulso NÃO confere nada.\n"
+                "`liberar` confere sozinho antes de aprovar (referência/anteriores/PEP) e recusa o que não for liberável. --pep-ok só depois de LER o PEP.\n"
                 "TR/tipagem/Coombs: só com resultado anterior igual ou PEP confirmado. Hemo/gaso/bioquímica: só dentro da referência.\n"
                 "Faça só a etapa que o usuário pediu. Login derruba a outra sessão do usuário: só com autorização."))
     ap.add_argument("--user", dest="cli_user", default=None,
@@ -5420,10 +5481,13 @@ def main():
     d.add_argument("--ate", help="fim DT_PRESCRICAO DD/MM/AAAA[ HH:MM]")
     le = sp.add_parser("ler", help="lê o que está em Digitação; aceita vários atendimentos (paralelo)")
     le.add_argument("atendimento", type=int, nargs="+"); le.add_argument("-j", "--workers", type=int, default=LOTE_WORKERS, help="atendimentos em paralelo (padrão 4)")
-    lb = sp.add_parser("liberar", help="aprova e libera UM exame por vez. NÃO confere histórico/PEP/referência: só use depois de rodar e LER `historico`/`lote conferir` (prefira `lote liberar`)")
+    lb = sp.add_parser("liberar", help="confere AGORA (referência, anteriores, PEP) e só então aprova e libera UM exame por vez; recusa o que não for liberável")
     lb.add_argument("atendimento", type=int)
     lb.add_argument("--exame", action="append", required=True, help="SIGLA do exame; repita para vários (liberados um de cada vez)")
-    lb.add_argument("--dry-run", action="store_true", help="só mostra o que faria, sem enviar nada")
+    lb.add_argument("--dry-run", action="store_true", help="faz a conferência e mostra a decisão, sem aprovar/liberar nada")
+    lb.add_argument("--pep-ok", action="append", default=[], metavar="SIGLA",
+                    help="só para PEP_A_CONFIRMAR: a IA atesta que LEU o trecho do PEP e ele confirma o resultado (repita por sigla)")
+    lb.add_argument("--dias", type=int, default=HIST_DIAS_PADRAO, help="janela do histórico na conferência (padrão 90)")
     r = sp.add_parser("resultado"); r.add_argument("atendimento", type=int)
     r.add_argument("--exame", action="append", required=True, help="SIGLA=valor ou SIGLA.campo=valor, ex.: TGO=20.7, BILI.total=0.64")
     r.add_argument("--dry-run", action="store_true"); r.add_argument("--forcar", action="store_true")
@@ -5569,7 +5633,7 @@ def main():
     elif a.cmd == "ler":
         cmd_ler(z, a.atendimento[0])
     elif a.cmd == "liberar":
-        cmd_liberar(z, a.atendimento, a.exame, a.dry_run)
+        cmd_liberar(z, a.atendimento, a.exame, a.dry_run, pep_ok=a.pep_ok, dias=a.dias)
     elif a.cmd == "resultado":
         cmd_resultado(z, a.atendimento, a.exame, a.dry_run, a.forcar, a.dump_payload)
     elif a.cmd == "hemo":

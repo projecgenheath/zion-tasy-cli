@@ -40,8 +40,9 @@ Siga todas, sempre. Se uma regra do usuário for mais restrita, vale a do usuár
 ### 1.3 Nunca liberar sem conferir
 1. **NUNCA** rode `liberar` ou `lote liberar` num exame sem antes ter rodado a etapa 3 (`lote conferir` ou `historico`) **naquele atendimento, nesta sessão de trabalho**.
 2. **NUNCA** libere sem ter **lido** a saída da conferência (classe, resultados anteriores e trechos do PEP).
-3. O comando avulso `liberar` **não confere nada**: ele aprova e libera qualquer exame em status 30 com resultado salvo. A conferência é responsabilidade sua. Prefira `lote liberar`, que só libera o que a conferência classificou como liberável.
-4. Conferência com mais de 60 min não vale: rode de novo.
+3. O `liberar` **sempre confere sozinho** antes de aprovar (mesma classificação do `lote conferir`, feita na hora: referência, resultados anteriores e PEP). Só libera `DENTRO_REFERENCIA` e `COERENTE`; `PEP_A_CONFIRMAR` só com `--pep-ok SIGLA`. Qualquer outra classe: **nada é aprovado** e sai com código 1. Não existe opção para pular essa conferência.
+4. Mesmo assim, **leia** a conferência que o `liberar` imprime e informe o usuário. `--pep-ok` só depois de ler o trecho do PEP e ele confirmar.
+5. Conferência do lote com mais de 60 min não vale: rode `lote conferir` de novo.
 
 ### 1.4 Regras de liberação
 | Tipo de exame | Libera quando | Senão |
@@ -122,8 +123,8 @@ python3 zion.py digitacao 100001                      # etapa 1
 python3 zion.py resultado 100001 --exame CREA=0.8 --exame UREA=30 --dry-run
 python3 zion.py resultado 100001 --exame CREA=0.8 --exame UREA=30   # etapa 2
 python3 zion.py historico 100001                      # etapa 3: LER a saída inteira
-python3 zion.py liberar 100001 --exame CREA --dry-run
-python3 zion.py liberar 100001 --exame CREA           # etapa 4: só se a etapa 3 permitir (regra 1.4)
+python3 zion.py liberar 100001 --exame CREA --dry-run   # confere de novo e mostra a decisão, sem liberar
+python3 zion.py liberar 100001 --exame CREA           # etapa 4: confere e só libera se for liberável
 ```
 Vários atendimentos com comandos avulsos: rode cada etapa para todos (`digitacao 100001 100002`, depois os saves, depois `historico 100001 100002`, depois os `liberar`).
 
@@ -186,7 +187,7 @@ Legenda: **L** = só leitura · **G** = grava no Tasy · **Local** = só arquivo
 | `hemo AT` | G | digita e salva hemograma (não libera) |
 | `gaso AT` | G | digita e salva gasometria + bioquímica equivalente (não libera) |
 | `historico AT [AT...]` | L | resultados anteriores, tendência, PEP (etapa 3) |
-| `liberar AT --exame SIGLA` | G | aprova e libera um exame por vez (**não confere nada**) |
+| `liberar AT --exame SIGLA` | G | confere na hora (referência/anteriores/PEP) e só então aprova e libera, um exame por vez |
 | `conferir` | L | audita exames **já liberados (40)**: erros de digitação e críticos |
 | `lote digitacao/digitar/conferir/liberar ARQ` | G / G / L / G | as 4 etapas para vários atendimentos |
 | `db-login`, `db-logout`, `db-whoami` | Local | acesso ao portal DB Diagnósticos |
@@ -287,14 +288,20 @@ python3 zion.py historico 100001 100002
 python3 zion.py historico 100001 --exame VDRL --exame HIV --notas 3
 ```
 
-### `liberar AT --exame SIGLA [--exame SIGLA ...] [--dry-run]` — G
-- Aprova (status 35) e libera (status 40) **um exame por vez**, como na tela (aprovar → liberar → reler). Nunca "Liberar todos".
-- ⚠️ **Não faz conferência.** Só recusa: sorologia externa, status ≠ 30, exame sem resultado. **Você** precisa ter rodado e lido a etapa 3 e aplicado a regra 1.4 antes.
-- Vários `--exame`: processados um de cada vez; no primeiro aviso/erro/consistência o CLI **para** e não segue.
+### `liberar AT --exame SIGLA [--exame SIGLA ...] [--pep-ok SIGLA ...] [--dias 90] [--dry-run]` — G
+1. **Primeiro confere** (só leitura), na hora, cada exame pedido: mesma classificação do `lote conferir` (seção 3) — referência, resultados anteriores e PEP. Imprime para cada exame: classe, motivo, valores, campos dentro/fora da referência, resultados anteriores, incoerências e trechos do PEP, e a **decisão** (LIBERÁVEL / RECUSADO).
+2. Liberável: `DENTRO_REFERENCIA`, `COERENTE`, e `PEP_A_CONFIRMAR` **só** se a sigla vier em `--pep-ok`.
+3. Testes rápidos, tipagens e Coombs **nunca** passam só pela referência: precisam de resultado anterior igual (`COERENTE`) ou `--pep-ok`.
+4. Se **qualquer** exame pedido for recusado: **nada** é aprovado, o CLI imprime `Resumo: SIGLA: recusado na conferência (CLASSE)` e sai com código 1.
+5. Se todos forem liberáveis: aprova (35) e libera (40) **um exame por vez**, como na tela; no primeiro aviso/erro/consistência para e não segue. Nunca "Liberar todos".
+6. `--dry-run`: faz a conferência e mostra a decisão, sem aprovar nem liberar.
+7. `--pep-ok SIGLA`: você atesta que **leu** o trecho do PEP e ele confirma o resultado. Nunca use "por garantia". Não destrava `FORA_REFERENCIA`, `INCOERENTE`, `QUALITATIVO_ALTERADO`, `SEM_REFERENCIA`, `EXTERNO`, `SEM_RESULTADO`, `FORA_DIGITACAO`, `NAO_ENCONTRADO`.
+8. Não existe opção para pular a conferência.
 - Ficou em 35 (aprovado, não liberado): avise o usuário para conferir na tela.
 ```bash
 python3 zion.py liberar 100001 --exame CREA --dry-run
 python3 zion.py liberar 100001 --exame CREA
+python3 zion.py liberar 100002 --exame HIV --pep-ok HIV   # só depois de LER o PEP e ele confirmar
 ```
 
 ### `conferir [--de D] [--ate D] [--at AT [AT ...]] [--json] [--sem-historico] [--dias 90] [-j N]` — L
@@ -313,7 +320,7 @@ python3 zion.py conferir --at 100001 100002
 | `digitacao` | G | `digitacao` de todos os `at` |
 | `digitar` | G | para cada `at`: `resultado` → `hemo` → `gaso`, sem histórico; unifica HGB/HCT (maior) se houver `hemo` e `gaso` |
 | `conferir` | L | classifica cada exame do arquivo (seção 3); grava `ARQ.conferencia.json` (permissão 600) |
-| `liberar` | G | exige conferência de ≤ 60 min; libera só `COERENTE`, `DENTRO_REFERENCIA` e `PEP_A_CONFIRMAR` com `pep_ok`; um exame por vez; resumo único |
+| `liberar` | G | exige conferência de ≤ 60 min; libera só `COERENTE`, `DENTRO_REFERENCIA` e `PEP_A_CONFIRMAR` com `pep_ok` (passado como `--pep-ok`); cada `liberar` ainda **refaz a conferência na hora** e recusa o que mudou; um exame por vez; resumo único |
 - `--dry-run` vale para `digitacao`, `digitar` e `liberar`.
 - Atendimentos rodam em paralelo; um com erro não para os outros; saída agrupada por atendimento.
 - `lote conferir`/`liberar` só olham as siglas que estão no arquivo (hemo = HC; gaso = exames de gasometria).
@@ -403,11 +410,12 @@ Windows: `%APPDATA%\zion-cli\`.
 | `bloqueado` / sorologia | exame externo | `db-anexar`; nunca digitar |
 | `Conferência de N min atrás` | conferência > 60 min | `lote conferir` de novo |
 | `liberar` parou em 35 ou com consistência | aviso do Tasy | avise; não insista |
+| `recusado na conferência (CLASSE)` | exame não liberável pela regra 1.4 | deixe digitado e avise o usuário com o motivo; `--pep-ok` só se a classe for `PEP_A_CONFIRMAR` e você leu o PEP confirmando |
 
 ## 11. Erros proibidos (já aconteceram)
 1. **Liberar sem conferir** com resultados anteriores/PEP (sem rodar ou sem ler `historico`/`lote conferir`).
 2. **Liberar teste rápido ou tipagem** sem resultado anterior igual ou confirmação lida no PEP — inclusive NR/negativo.
-3. **Pôr sigla em `pep_ok` sem ter lido** o trecho do PEP que confirma.
+3. **Pôr sigla em `pep_ok` / `--pep-ok` sem ter lido** o trecho do PEP que confirma.
 4. **Digitar incompleto ou bagunçado:** pular exames do papel, trocar valores entre exames/atendimentos, HGB/HCT diferentes entre hemograma e gasometria.
 5. **Inventar ou "corrigir" valor** que não está no papel; digitar valor ilegível.
 6. **Misturar etapas** (fazer um atendimento inteiro de cada vez) ou fazer etapa que o usuário não pediu (conferir/resumo quando só pediu digitação).
