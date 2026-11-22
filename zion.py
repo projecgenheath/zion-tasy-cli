@@ -1957,7 +1957,7 @@ def _imprimir_conferencia(x):
         print(f"     valores: {x['valores'][:200]}")
     ref = x.get("ref") or {}
     for rot, k in (("dentro da referência", "dentro"), ("FORA da referência", "fora"),
-                   ("DIVERGÊNCIA Tasy × tabela", "divergente"),
+                   ("DIVERGÊNCIA Tasy × tabela", "divergente"), ("PENDENTE", "pendente"),
                    ("qualitativo alterado", "alterado"), ("sem referência", "sem_ref"), ("nota da referência", "notas")):
         if ref.get(k):
             print(f"     {rot}: " + "; ".join(ref[k][:6]))
@@ -4056,7 +4056,7 @@ def cmd_historico(z, atend, exames=None, dias=HIST_DIAS_PADRAO, notas=1, as_json
             print(f"\n-- prescr {t.nr} | fonte: {h['fonte']}")
             print_historico(h, compacto=False, max_ant=12)
             for rot, k in (("referência: dentro", "dentro"), ("referência: FORA", "fora"),
-                           ("referência: DIVERGÊNCIA Tasy × tabela", "divergente"),
+                           ("referência: DIVERGÊNCIA Tasy × tabela", "divergente"), ("referência: PENDENTE", "pendente"),
                            ("referência: sem faixa", "sem_ref"), ("referência: nota", "notas")):
                 if av.get(k):
                     print(f"    {rot}: " + "; ".join(av[k][:6]))
@@ -5270,30 +5270,42 @@ def _ref_tabela(vo, x):
         mat, mat_txt = _lactato_material(vo)
         faixas = [f for f in faixas if f.get("material") in (None, mat)]
     if precisa_sexo and not sexo:
-        return {"status": "sem_faixa", "nome": nome, "motivo": f"{nome}: sexo do paciente desconhecido"}
+        return {"status": "sem_faixa", "nome": nome, "motivo": f"{nome}: sexo do paciente desconhecido", "prioridade": e.get("prioridade")}
     if precisa_idade and not idade:
-        return {"status": "sem_faixa", "nome": nome, "motivo": f"{nome}: idade do paciente desconhecida"}
+        return {"status": "sem_faixa", "nome": nome, "motivo": f"{nome}: idade do paciente desconhecida", "prioridade": e.get("prioridade")}
     hit = [f for f in faixas if f.get("sexo") in (None, sexo)
            and (not idade or (_limite_ok(idade, f.get("de"), "de") and _limite_ok(idade, f.get("ate"), "ate")))]
     if not hit:
-        return {"status": "sem_faixa", "nome": nome,
+        return {"status": "sem_faixa", "nome": nome, "prioridade": e.get("prioridade"),
                 "motivo": f"{nome}: tabela sem faixa para {sexo or '?'} {_idade_txt(idade)}"}
     f = hit[0]
     quem = " ".join(s for s in (sexo if precisa_sexo else "", _idade_txt(idade) if precisa_idade else "", mat_txt) if s)
-    return {"status": "ok", "nome": nome, "faixa": f, "unidade": e.get("unidade"),
+    return {"status": "ok", "nome": nome, "faixa": f, "unidade": e.get("unidade"), "prioridade": e.get("prioridade"),
             "txt": f"{_faixa_txt(f)} {e.get('unidade')} (tabela DB{', ' + quem if quem else ''}{nota_un})"}
 
 
 def _ref_avaliar(vo):
     """Classifica cada campo com valor: dentro, fora, qualitativo alterado, sem referência ou
     divergente (Tasy × tabela do laboratório). Ver referencias.json e o comentário acima."""
-    fora, alterado, sem_ref, dentro, diverg, notas = [], [], [], [], [], []
+    fora, alterado, sem_ref, dentro, diverg, notas, pendente = [], [], [], [], [], [], []
     for x in vo.get("subExams") or []:
         c = _campo_resultado(x)
         if not c:
             continue
         nm, sl = c
         v = sub_val(x)
+        if "etfg" in sl or "filtracaoglomerular" in sl:
+            # eTFG (creatinina): < 18 anos sai 0/vazio (esperado); >= 18 o Tasy calcula quando o campo Idade é preenchido
+            _sx, idade = _ref_paciente(vo)
+            vazio = v in (None, "") or (isinstance(v, float) and v == 0)
+            if not idade:
+                sem_ref.append(f"{nm}: idade do paciente desconhecida — eTFG não avaliável"); continue
+            if idade["a"] < 18:
+                if vazio:
+                    dentro.append(f"{nm} vazio/0 (esperado: paciente < 18 anos)"); continue
+            elif vazio:
+                pendente.append(f"{nm} não calculado: preencha o campo Idade da creatinina (paciente ≥ 18 anos; o Tasy calcula o eTFG sozinho)")
+                continue
         if v in (None, ""):
             continue
         fmt = x.get("ieFormatoResultado")
@@ -5313,10 +5325,17 @@ def _ref_avaliar(vo):
             except Exception as e:   # tabela nunca derruba a conferência
                 notas.append(f"{nm}: erro na tabela de referência ({e})")
             tab_motivo = None
+            if tab and tab["status"] == "sem_faixa" and tab.get("prioridade") == "tabela":
+                sem_ref.append(f"{nm} {vtxt(v)} ({tab['motivo']}" + (f"; Tasy {faixa} só informativo" if tasy_tem else "") + ")")
+                continue
             if tab and tab["status"] in ("unidade", "sem_faixa"):
                 notas.append(tab["motivo"])
                 tab_motivo = tab["motivo"]
                 tab = None
+            if tab and tab.get("prioridade") == "tabela" and tasy_tem:
+                notas.append(f"{nm}: faixa do Tasy {faixa} só informativa (vale a tabela do laboratório)")
+                tasy_tem = False
+                tab["txt"] += f"; Tasy {faixa} só informativo"
             if tab:
                 tab_dentro = _faixa_dentro(v, tab["faixa"])
                 if tasy_tem and tasy_dentro != tab_dentro:
@@ -5349,7 +5368,7 @@ def _ref_avaliar(vo):
         else:
             sem_ref.append(f"{nm} {v}" + (f" (ref {x.get('dsReferencia')})" if rs else " (sem referência determinável)"))
     return {"fora": fora, "alterado": alterado, "sem_ref": sem_ref, "dentro": dentro,
-            "divergente": diverg, "notas": notas}
+            "divergente": diverg, "notas": notas, "pendente": pendente}
 
 
 def _ref_fora(vo):
@@ -5415,6 +5434,8 @@ def _classificar_resultado(av, incoer, hist_ok, pep, motivo_notas=None, exige_co
         return "FORA_REFERENCIA", "fora da referência: " + "; ".join(av["fora"][:4])
     if av["alterado"]:
         return "QUALITATIVO_ALTERADO", "qualitativo alterado (REAGENTE/Positivo): " + "; ".join(av["alterado"][:4])
+    if av.get("pendente"):
+        return "CAMPO_PENDENTE", "; ".join(av["pendente"][:4])
     if av.get("divergente"):
         return ("REF_DIVERGENTE", "referência do Tasy e tabela do laboratório divergem para este valor: "
                 + "; ".join(av["divergente"][:4]))
@@ -5567,7 +5588,7 @@ def lote_conferir(z, a, path, itens):
     print(f"  Conferência gravada em {cp} (dados de paciente: arquivo local, permissão 600 — nunca commitar)")
     print("  Etapa 4: `lote liberar` libera COERENTE e DENTRO_REFERENCIA (hemo/gaso/bioquímica dentro da referência, mesmo sem histórico/PEP).")
     print("  PEP_A_CONFIRMAR (testes rápidos/tipagens sem resultado anterior igual, ou exame sem referência com trecho no PEP) só com \"pep_ok\".")
-    print("  Não libera: FORA_REFERENCIA, REF_DIVERGENTE, QUALITATIVO_ALTERADO, INCOERENTE, SEM_REFERENCIA, EXTERNO, SEM_RESULTADO, FORA_DIGITACAO.")
+    print("  Não libera: FORA_REFERENCIA, REF_DIVERGENTE, CAMPO_PENDENTE, QUALITATIVO_ALTERADO, INCOERENTE, SEM_REFERENCIA, EXTERNO, SEM_RESULTADO, FORA_DIGITACAO.")
     return conf
 
 

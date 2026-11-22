@@ -4,7 +4,8 @@
   "excluir (palavras que impedem o uso: urina, clearance...), gaso (nome do campo dentro da gasometria), unidade e equivalentes, faixas.",
   "Faixa: sexo M/F (omitido = ambos), de/ate = idade na coleta, 'Nd' dias, 'Nm' meses, 'Na' anos completos; de inclusivo, ate EXCLUSIVO (omitido = sem limite).",
   "min/max inclusivos; min_excl/max_excl true = estrito ('Inferior a X' -> max X, max_excl true; 'Superior a X' -> min X, min_excl true).",
-  "material: so para lactato (venoso/arterial). Sem faixa para o sexo/idade do paciente = SEM_REFERENCIA (nao libera)."],
+  "material: so para lactato (venoso/arterial). Sem faixa para o sexo/idade do paciente = SEM_REFERENCIA (nao libera).",
+  "prioridade: \"tabela\" = a faixa do Tasy vira so informativa (sem REF_DIVERGENTE); sem faixa na tabela = SEM_REFERENCIA. Omitido = Tasy e tabela precisam concordar."],
  "exames": [
   {"id": "acido_urico", "nome": "Ácido úrico", "siglas": ["AURS", "ACURI", "AU", "URIC"], "nomes": ["acidourico"], "excluir": ["urina", "24h", "24horas", "volume"], "campo": [], "unidade": "mg/dL",
    "faixas": [
@@ -17,7 +18,7 @@
     {"de": "18a", "ate": "61a", "min": 13, "max": 43},
     {"de": "61a", "ate": "91a", "min": 17, "max": 49},
     {"de": "91a", "min": 21, "max": 66}]},
-  {"id": "creatinina", "nome": "Creatinina", "siglas": ["CREA", "CRE"], "nomes": ["creatinina"], "excluir": ["urina", "24h", "24horas", "clearance", "depuracao", "creatinofosfoquinase"], "campo": [], "unidade": "mg/dL",
+  {"id": "creatinina", "nome": "Creatinina", "siglas": ["CREA", "CRE"], "nomes": ["creatinina"], "excluir": ["urina", "24h", "24horas", "clearance", "depuracao", "creatinofosfoquinase"], "campo": [], "unidade": "mg/dL", "prioridade": "tabela",
    "faixas": [
     {"sexo": "M", "de": "0d", "ate": "5d", "min": 0.3, "max": 1.0},
     {"sexo": "M", "de": "5d", "ate": "4a", "min": 0.2, "max": 0.4},
@@ -88,6 +89,7 @@
     {"sexo": "M", "de": "10a", "ate": "13a", "min": 42, "max": 362},
     {"sexo": "M", "de": "13a", "ate": "16a", "min": 74, "max": 390},
     {"sexo": "M", "de": "16a", "ate": "19a", "min": 52, "max": 171},
+    {"sexo": "M", "de": "19a", "min": 30, "max": 120},
     {"sexo": "F", "de": "0d", "ate": "30d", "min": 48, "max": 406},
     {"sexo": "F", "de": "30d", "ate": "1a", "min": 124, "max": 341},
     {"sexo": "F", "de": "1a", "ate": "4a", "min": 108, "max": 317},
@@ -154,7 +156,7 @@
     {"de": "19a", "min": 8.6, "max": 10.3}]},
   {"id": "magnesio", "nome": "Magnésio", "siglas": ["MG+", "MG", "MAG"], "nomes": ["magnesio"], "excluir": ["urina", "24h"], "campo": [], "unidade": "mg/dL",
    "faixas": [
-    {"de": "1m", "ate": "5m", "min": 1.5, "max": 2.2},
+    {"de": "0d", "ate": "5m", "min": 1.5, "max": 2.2},
     {"de": "5m", "ate": "6a", "min": 1.7, "max": 2.3},
     {"de": "6a", "ate": "13a", "min": 1.7, "max": 2.1},
     {"de": "18a", "min": 1.7, "max": 2.4}]},
@@ -167,7 +169,7 @@
     {"material": "arterial", "min": 0.5, "max": 1.6}]},
   {"id": "sodio", "nome": "Sódio", "siglas": ["NA+", "NA"], "nomes": ["sodio"], "excluir": ["urina", "24h"], "campo": [], "gaso": ["na"], "unidade": "mmol/L", "equivalentes": ["mEq/L"],
    "faixas": [
-    {"de": "18a", "ate": "91a", "min": 136, "max": 145},
+    {"de": "0d", "ate": "91a", "min": 136, "max": 145},
     {"de": "91a", "min": 132, "max": 146}]},
   {"id": "potassio", "nome": "Potássio", "siglas": ["K+", "K"], "nomes": ["potassio"], "excluir": ["urina", "24h"], "campo": [], "gaso": ["k"], "unidade": "mmol/L", "equivalentes": ["mEq/L"],
    "faixas": [

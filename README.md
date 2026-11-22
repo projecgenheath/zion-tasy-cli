@@ -157,6 +157,7 @@ Vários atendimentos com comandos avulsos: rode cada etapa para todos (`digitaca
 | `COERENTE` | De acordo com o resultado anterior (hemo/gaso/bioq dentro da referência; TR/tipagem igual ao anterior) | **Sim** | `lote liberar` libera |
 | `PEP_A_CONFIRMAR` | TR/tipagem sem anterior igual (inclusive NR/negativo), ou exame sem referência com trecho no PEP | **Só com `pep_ok`** | Ler o trecho do PEP. Confirma → sigla em `pep_ok`. Não confirma ou não há trecho → não liberar e avisar |
 | `FORA_REFERENCIA` | Valor fora da referência | Não | Fica digitado. Avisar com o valor e a referência |
+| `CAMPO_PENDENTE` | Falta preencher campo que o Tasy usa para calcular (ex.: Idade da creatinina em ≥ 18 anos → eTFG não calculado) | Não | Avisar; preencher o campo (etapa 2) e conferir de novo |
 | `REF_DIVERGENTE` | Faixa do Tasy e tabela do laboratório (`referencias.json`) discordam para este valor | Não | Fica digitado. Avisar com as duas faixas (seção 3A) |
 | `QUALITATIVO_ALTERADO` | Qualitativo alterado (REAGENTE/Positivo) | Não | Fica digitado. Avisar |
 | `INCOERENTE` | Diverge do anterior (mudança > 50%, passou a crítico, qualitativo diferente) ou o PEP diz o contrário | Não | Fica digitado. Avisar com o motivo; conferir se houve erro de digitação |
@@ -165,7 +166,7 @@ Vários atendimentos com comandos avulsos: rode cada etapa para todos (`digitaca
 | `SEM_RESULTADO` | Nada salvo no exame | Nunca | Digitar (etapa 2) ou avisar que falta no papel |
 | `FORA_DIGITACAO` | Status diferente de 30 | Nunca | Ver `listar`; colocar em Digitação se o usuário pedir |
 | `NAO_ENCONTRADO` | Sigla do arquivo não está em Digitação no atendimento | Nunca | Conferir a sigla/atendimento e avisar |
-- `pep_ok` só vale para `PEP_A_CONFIRMAR`. Não destrava `FORA_REFERENCIA`, `REF_DIVERGENTE`, `INCOERENTE`, `QUALITATIVO_ALTERADO`, `SEM_REFERENCIA` nem as classes "nunca".
+- `pep_ok` só vale para `PEP_A_CONFIRMAR`. Não destrava `FORA_REFERENCIA`, `REF_DIVERGENTE`, `CAMPO_PENDENTE`, `INCOERENTE`, `QUALITATIVO_ALTERADO`, `SEM_REFERENCIA` nem as classes "nunca".
 - Com `historico` (avulso) não há classe: aplique você a mesma tabela lendo os alertas (`AVISO: sem resultado anterior`, `mudança grande`, `passou a faixa crítica`, `AVISO: sem evolução clínica compatível`) e a referência.
 
 Listas de siglas no código (`zion.py`): `SIGLAS_TR_TIPAGEM` (+ qualquer sigla `TR*` e nomes com "teste rápido", "tipagem", "coombs", "fator rh", "grupo/tipo sanguíneo", "vdrl", "sífilis"), `SIGLAS_HEMO`, `GASO_SIGLAS`, `SIGLAS_BIOQUIMICA`, `EXAMES_EXTERNOS_BLOQUEADOS`.
@@ -181,6 +182,7 @@ A conferência (`liberar`, `lote conferir`, `historico`) decide "dentro/fora da 
    | Só a tabela tem faixa | usa a tabela |
    | Só o Tasy tem faixa (tabela sem faixa para o sexo/idade, ou exame fora da tabela) | usa o Tasy |
    | Nenhuma das duas, ou sexo/idade desconhecidos e a faixa depende deles | `SEM_REFERENCIA` (não libera) |
+   | Exame com `"prioridade": "tabela"` no `referencias.json` (hoje: **creatinina**) | vale **só a tabela**; a faixa do Tasy aparece como "só informativo" e nunca gera `REF_DIVERGENTE`. Sem faixa na tabela (sexo/idade desconhecidos) → `SEM_REFERENCIA` |
    | Unidade do campo no Tasy diferente da tabela | a tabela é **ignorada** naquele campo (aviso na saída). Unidade vazia ou "." no Tasy: procura a unidade no texto da referência; se não achar, usa a da tabela e avisa. mEq/L = mmol/L (Na, K); µg/dL = ug/dL |
 4. A saída mostra a faixa usada e a fonte, por exemplo `Creatinina 0.8 (ref 0.6–1.1 mg/dL (tabela DB, F 30 anos); Tasy 0.31–0.92)`.
 
@@ -189,14 +191,17 @@ A conferência (`liberar`, `lote conferir`, `historico`) decide "dentro/fora da 
 **Decisões de interpretação** (editáveis no `referencias.json`):
 - Limites de idade: `de` inclusivo, `ate` exclusivo, em idade completa. Ex.: "18–60 anos" = 18 a 60 anos completos; "61–90" = 61 a 90; ">90" = 91 ou mais. "RN até 4 dias" = 0 a 4 dias; "5 dias–3 anos" = 5 dias a 3 anos completos.
 - "Inferior a X" = valor < X (X já é fora). "Superior a X" (HDL) = valor > X.
-- Creatinina mulher 18–60 anos: 0,60–1,10. Glicose: 70–99 (jejum). Triglicérides: limite **com jejum**. PCR: < 5,00 mg/L.
+- Creatinina: vale a tabela do laboratório (prioridade sobre o Tasy); mulher 18–60 anos: 0,60–1,10. Glicose: 70–99 (jejum). Triglicérides: limite **com jejum**. PCR: < 5,00 mg/L.
 - Lactato: venoso 0,5–2,2 / arterial 0,5–1,6, pelo exame (GASV/GASA) ou pelo nome/material ("arterial"/"venoso"); sem identificação → arterial (mais restrito).
 - Bilirrubina direta < 0,20 e indireta < 1,10 em qualquer idade (no recém-nascido a indireta quase sempre sai fora → fica só digitado).
 - Ureia < 1 ano: 9–41 para todos (a faixa "prematuro 6–54" não é usada: o CLI não sabe se é prematuro; 9–41 é mais restrita).
 - Ferro: RN = até 27 dias; criança < 7 anos = 28 dias a 6 anos; criança > 7 anos = 7 a 17 anos; adulto (homem/mulher) = 18 anos ou mais.
 - Colesterol, HDL e triglicérides: adulto = 20 anos ou mais.
-- Cálcio: < 1 ano; 1–18 anos; 19 anos ou mais. Magnésio: 1–4 meses; 5 meses–5 anos; 6–12 anos; adulto = 18 anos ou mais.
-- **Sem faixa na tabela (cai no Tasy, ou `SEM_REFERENCIA`):** fosfatase alcalina **homem adulto** (a tabela só traz "Adultos 30–120" para mulher); magnésio < 1 mês e 13–17 anos; sódio < 18 anos.
+- Cálcio: < 1 ano; 1–18 anos; 19 anos ou mais. Magnésio: 0–4 meses (inclui < 1 mês) 1,5–2,2; 5 meses–5 anos; 6–12 anos; adulto = 18 anos ou mais.
+- Sódio: 136–145 até 90 anos (inclui < 18 anos); 91 anos ou mais: 132–146.
+- Fosfatase alcalina: adulto (19 anos ou mais) 30–120 para homem e mulher.
+- **eTFG da creatinina:** paciente < 18 anos → eTFG 0/vazio é esperado (conta como dentro). Paciente ≥ 18 anos → o Tasy calcula o eTFG quando o campo **Idade** da creatinina está preenchido; eTFG 0/vazio = `CAMPO_PENDENTE` (não libera; preencha a Idade). eTFG com valor → avaliado pela referência do Tasy (≥ 60). Idade desconhecida → não libera.
+- **Sem faixa na tabela (cai no Tasy, ou `SEM_REFERENCIA`):** magnésio 13–17 anos.
 
 **Como acrescentar ou mudar uma referência:** edite `referencias.json` (sem dado de paciente) nos dois repositórios:
 ```json
@@ -208,6 +213,7 @@ A conferência (`liberar`, `lote conferir`, `historico`) decide "dentro/fora da 
 - `siglas`: CD_EXAME do Tasy. `nomes`: pedaço do nome do exame sem acento/espaço (usado se a sigla não bater). `excluir`: palavras no nome/material/campo que impedem o uso (urina, clearance…).
 - `campo`: para exame com vários campos (ex.: `["direta"]`); vazio = campo principal. `campo_excluir`: palavras que o campo não pode ter. `gaso`: nome do campo dentro da gasometria.
 - Faixa: `sexo` M/F (sem = ambos); `de`/`ate` com `d`, `m` ou `a`; `min`/`max` inclusivos; `min_excl`/`max_excl` = estrito. `material` só para venoso/arterial.
+- `"prioridade": "tabela"`: a tabela vence o Tasy naquele exame (o Tasy fica só informativo). Sem esse campo, Tasy e tabela precisam concordar.
 - A primeira faixa que servir é usada. Teste com `historico AT` ou `liberar AT --exame SIGLA --dry-run`.
 
 ## 4. Referência de comandos
@@ -336,7 +342,7 @@ python3 zion.py historico 100001 --exame VDRL --exame HIV --notas 3
 4. Se **qualquer** exame pedido for recusado: **nada** é aprovado, o CLI imprime `Resumo: SIGLA: recusado na conferência (CLASSE)` e sai com código 1.
 5. Se todos forem liberáveis: aprova (35) e libera (40) **um exame por vez**, como na tela; no primeiro aviso/erro/consistência para e não segue. Nunca "Liberar todos".
 6. `--dry-run`: faz a conferência e mostra a decisão, sem aprovar nem liberar.
-7. `--pep-ok SIGLA`: você atesta que **leu** o trecho do PEP e ele confirma o resultado. Nunca use "por garantia". Não destrava `FORA_REFERENCIA`, `REF_DIVERGENTE`, `INCOERENTE`, `QUALITATIVO_ALTERADO`, `SEM_REFERENCIA`, `EXTERNO`, `SEM_RESULTADO`, `FORA_DIGITACAO`, `NAO_ENCONTRADO`.
+7. `--pep-ok SIGLA`: você atesta que **leu** o trecho do PEP e ele confirma o resultado. Nunca use "por garantia". Não destrava `FORA_REFERENCIA`, `REF_DIVERGENTE`, `CAMPO_PENDENTE`, `INCOERENTE`, `QUALITATIVO_ALTERADO`, `SEM_REFERENCIA`, `EXTERNO`, `SEM_RESULTADO`, `FORA_DIGITACAO`, `NAO_ENCONTRADO`.
 8. Não existe opção para pular a conferência.
 - Ficou em 35 (aprovado, não liberado): avise o usuário para conferir na tela.
 ```bash
