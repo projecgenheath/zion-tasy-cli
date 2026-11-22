@@ -5315,8 +5315,14 @@ def _ref_avaliar(vo):
             else:
                 lo, hi = _num_or_none(x.get("qtMinima")), _num_or_none(x.get("qtMaxima"))
             faixa = f"{vtxt(lo) if lo is not None else '-'}–{vtxt(hi) if hi else '-'}"
-            tasy_tem = bool(lo or hi)
+            # faixa do Tasy vazia ou "0,00 a 0,00" (mínimo e máximo zero/ausentes) = SEM faixa -> usa a tabela
+            tasy_tem = not (lo in (None, 0) and hi in (None, 0))
             tasy_dentro = None
+            if v == 0 and not tasy_tem and _ref_entrada(vo, x) is None:
+                # campo auxiliar zerado sem nenhuma referência (ex.: "Volume Ácido Úrico" em soro): é campo vazio,
+                # igual ao filtro de "resultado salvo" da conferência — não bloqueia o exame
+                notas.append(f"{nm} = 0 sem referência: tratado como campo vazio (ignorado)")
+                continue
             if tasy_tem:
                 tasy_dentro = not ((lo is not None and lo != 0 and v < lo) or (hi and v > hi))
             tab = None
