@@ -32,6 +32,11 @@ Siga todas, sempre. Se uma regra do usuário for mais restrita, vale a do usuár
 5. Conferência do lote com mais de 60 min não vale: rode `lote conferir` de novo.
 
 ### 1.4 Regras de liberação
+
+> **O que está liberável DEVE ser liberado.** Quando o usuário pediu para liberar (ou o fluxo completo), todo exame que a conferência classificou como **`DENTRO_REFERENCIA` ou `COERENTE`** **deve** ser liberado com `python3 zion.py liberar AT --exame SIGLA` (ou `lote liberar ARQ`). **Não precisa de PEP nem de resultado anterior** para isso: a referência (Tasy + tabela do laboratório, seção 3A) basta. Não deixe exame liberável parado "por cautela". Digitar e conferir **não** liberam nada.
+> - `--pep-ok` é só para `PEP_A_CONFIRMAR`. Nas outras classes não liberáveis, deixe digitado e avise o usuário com o motivo que o CLI imprimiu.
+> - Antes de liberar, a primeira linha do `liberar`/`lote conferir` deve mostrar `Tabela de referência: .../referencias.json (27 exames)`. Se aparecer `EMBUTIDA` ou `!!! ATENÇÃO`, faça `git pull` no clone e rode de lá.
+
 | Tipo de exame | Libera quando | Senão |
 |---|---|---|
 | **Testes rápidos** (HIV, VDRL, TRS/sífilis, hepatites TR, TRTOXO, qualquer sigla `TR*`) e **tipagem / fator Rh / Coombs** (GP-TIP, TIP, ABO, COOI, COOD, CI, CD) | Resultado anterior **igual** **ou** confirmação lida no PEP. Vale também para NÃO REAGENTE / Negativo. | Só digitar e salvar. Não liberar. Avisar o usuário. |
@@ -160,8 +165,8 @@ Listas de siglas no código (`zion.py`): `SIGLAS_TR_TIPAGEM` (+ qualquer sigla `
 
 ## 3A. Valores de referência (Tasy + tabela do laboratório)
 A conferência (`liberar`, `lote conferir`, `historico`) decide "dentro/fora da referência" assim, campo a campo:
-1. **Faixa do Tasy:** `qtMinima`/`qtMaxima` (ou `prMinimo`/`prMaximo`) do campo, como já era.
-2. **Tabela do laboratório (DB Diagnósticos):** arquivo `referencias.json`, ao lado do `zion.py`. Faixas por **sexo** e **idade na data da coleta** (dias/meses/anos completos), calculadas pela data de nascimento e pelo sexo do paciente no Tasy.
+1. **Faixa do Tasy:** `qtMinima`/`qtMaxima` (ou `prMinimo`/`prMaximo`) do campo. Campo numérico sem nenhuma delas: usa o texto da referência do Tasy se tiver **uma** faixa clara "A a B" na mesma escala do valor (ex.: Hct "37% a 47%"; aviso na saída).
+2. **Tabela do laboratório (DB Diagnósticos):** arquivo `referencias.json`, ao lado do `zion.py` (pasta real do script; também `ZION_REFERENCIAS`, diretório atual ou `~/.config/zion-cli/`). Sem o arquivo, usa a **cópia embutida** no zion.py com aviso `!!! ATENÇÃO`. `python3 zion.py referencias` mostra qual está em uso. Ao editar o JSON, rode `python3 zion.py referencias --embutir` e faça commit dos dois. Faixas por **sexo** e **idade na data da coleta** (dias/meses/anos completos), calculadas pela data de nascimento e pelo sexo do paciente no Tasy.
 3. **Como combina:**
    | Situação | Resultado |
    |---|---|
@@ -227,7 +232,8 @@ Legenda: **L** = só leitura · **G** = grava no Tasy · **Local** = só arquivo
 | `hemo AT` | G | digita e salva hemograma (não libera) |
 | `gaso AT` | G | digita e salva gasometria + bioquímica equivalente (não libera) |
 | `historico AT [AT...]` | L | resultados anteriores, tendência, PEP (etapa 3) |
-| `liberar AT --exame SIGLA` | G | confere na hora (referência/anteriores/PEP) e só então aprova e libera, um exame por vez |
+| `liberar AT --exame SIGLA` | G | confere na hora (referência/anteriores/PEP) e só então aprova e libera, um exame por vez. `DENTRO_REFERENCIA`/`COERENTE` **devem** ser liberados (sem PEP) |
+| `referencias [--embutir]` | L | sem Tasy: mostra a tabela de referência em uso e de onde veio |
 | `conferir` | L | audita exames **já liberados (40)**: erros de digitação e críticos |
 | `lote digitacao/digitar/conferir/liberar ARQ` | G / G / L / G | as 4 etapas para vários atendimentos |
 | `db-login`, `db-logout`, `db-whoami` | Local | acesso ao portal DB Diagnósticos |
@@ -450,6 +456,7 @@ Windows: `%APPDATA%\zion-cli\`.
 | `bloqueado` / sorologia | exame externo | `db-anexar`; nunca digitar |
 | `Conferência de N min atrás` | conferência > 60 min | `lote conferir` de novo |
 | `liberar` parou em 35 ou com consistência | aviso do Tasy | avise; não insista |
+| Nenhum exame liberado / quase tudo `SEM_REFERENCIA` | clone antigo (sem `referencias.json` atualizado) ou zion.py copiado sozinho | `git pull` no clone; `python3 zion.py referencias` deve mostrar o arquivo do clone e 27+ exames. Hemograma com diferencial sem faixa no Tasy continua `SEM_REFERENCIA` (conhecido): avise o usuário |
 | `recusado na conferência (CLASSE)` | exame não liberável pela regra 1.4 | deixe digitado e avise o usuário com o motivo; `--pep-ok` só se a classe for `PEP_A_CONFIRMAR` e você leu o PEP confirmando |
 
 ## 11. Erros proibidos (já aconteceram)

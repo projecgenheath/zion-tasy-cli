@@ -268,9 +268,14 @@ API = HOST + "/TasyAppServer/resources"
 USER = (os.environ.get("ZION_USER") or "").strip()
 PERFIL_NOME = (os.environ.get("ZION_PROFILE") or DEFAULT_PROFILE).strip()
 SETOR_NOME = (os.environ.get("ZION_SETOR") or DEFAULT_SETOR).strip()
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.realpath(__file__))   # realpath: symlink em ~/bin aponta para a pasta do repo
 SESSION_FILE = session_path()
-TPL = json.load(open(os.path.join(HERE, "templates.json"), encoding="utf-8"))
+try:
+    TPL = json.load(open(os.path.join(HERE, "templates.json"), encoding="utf-8"))
+except FileNotFoundError:
+    sys.exit(f"ERRO: templates.json não encontrado em {HERE}. Use o zion.py DENTRO da pasta do repositório "
+             "(git clone/git pull de github.com/projecgenheath/zion-tasy-cli), ou um symlink para ele; "
+             "não copie só o zion.py.")
 TZ = dt.timezone(dt.timedelta(hours=-3))
 STATUS = {10: "Prescrições / Pendente coleta", 20: "Material Coletado", 25: "Em Análise",
           26: "Interfaceamento/Fase Analítica", 30: "Digitação do Resultado",
@@ -1981,6 +1986,7 @@ def cmd_liberar(z, atend, exames, dry, pep_ok=None, dias=None):
     Testes rápidos/tipagens/Coombs nunca passam só pela referência. Sem bypass."""
     pep_ok = {str(s).upper().strip() for s in (pep_ok or [])}
     dias = dias or HIST_DIAS_PADRAO
+    print(f"Tabela de referência: {_ref_fonte_txt()}")
     data, telas = abrir_telas(z, atend, write=not dry)
     if not telas:
         print("Nenhum exame em Digitação (30) para este atendimento."); return []
@@ -5110,8 +5116,9 @@ def _hist_qual_anteriores(z, atend, cd, nr_atual, dias, cache, limite_presc=HIST
 #  - Tasy sem faixa: usa a tabela.
 #  - Tabela sem faixa para o sexo/idade (ou sexo/idade desconhecidos): usa a do Tasy; sem nenhuma -> SEM_REFERENCIA.
 #  - Unidade do Tasy diferente da tabela: a tabela é ignorada naquele campo (avisado).
-REFERENCIAS_ARQ = os.path.join(os.path.dirname(os.path.abspath(__file__)), "referencias.json")
+REFERENCIAS_ARQ = os.path.join(os.path.dirname(os.path.realpath(__file__)), "referencias.json")
 _REF_TAB = None
+_REF_FONTE = None   # caminho do referencias.json usado, ou "EMBUTIDA"
 _REF_SUB_IGNORAR = ("observ", "idade", "etfg", "filtracao", "volume", "fracoes")
 # Valor 0 sem faixa: só estes campos auxiliares são tratados como vazios (ignorados). Qualquer outro 0
 # sem referência (eosinófilos, bastonetes, plaquetas, HCO3, Hct...) continua bloqueando (SEM_REFERENCIA).
@@ -5124,27 +5131,85 @@ _EAS_PAR_SIMPLES = {"celulasepiteliais": "celulasepiteliaisx1000", "leucocitospi
 _UNID_RE = re.compile(r"(?<![a-z])(mg/dl|mg/l|g/dl|g/l|u/l|ui/l|mmol/l|meq/l|ug/dl|mcg/dl|µg/dl)")
 
 
+# Cópia embutida do referencias.json (fallback se o arquivo não for achado). Ao editar o
+# referencias.json rode `python3 zion.py referencias --embutir` e faça commit dos DOIS arquivos.
+# >>> REFERENCIAS_EMBUTIDAS
+_REF_EMBUTIDA_JSON = '{"_leia":["Tabela de referência do laboratório (DB Diagnósticos) usada pela conferência (liberar, lote conferir, historico).","Cada exame: siglas (CD_EXAME do Tasy), nomes (palavras do nome do exame, sem acento/espaço), campo (palavras do nome do campo; vazio = campo principal),","excluir (palavras que impedem o uso: urina, clearance...), gaso (nome do campo dentro da gasometria), unidade e equivalentes, faixas.","Faixa: sexo M/F (omitido = ambos), de/ate = idade na coleta, \'Nd\' dias, \'Nm\' meses, \'Na\' anos completos; de inclusivo, ate EXCLUSIVO (omitido = sem limite).","min/max inclusivos; min_excl/max_excl true = estrito (\'Inferior a X\' -> max X, max_excl true; \'Superior a X\' -> min X, min_excl true).","material: so para lactato (venoso/arterial). Sem faixa para o sexo/idade do paciente = SEM_REFERENCIA (nao libera).","prioridade: \\"tabela\\" = a faixa do Tasy vira so informativa (sem REF_DIVERGENTE); sem faixa na tabela = SEM_REFERENCIA. Omitido = Tasy e tabela precisam concordar."],"exames":[{"id":"acido_urico","nome":"Ácido úrico","siglas":["AURS","ACURI","AU","URIC"],"nomes":["acidourico"],"excluir":["urina","24h","24horas","volume"],"campo":[],"unidade":"mg/dL","faixas":[{"sexo":"M","min":4.4,"max":7.6},{"sexo":"F","min":2.3,"max":6.6}]},{"id":"ureia","nome":"Ureia","siglas":["UREA","URE","UREIA"],"nomes":["ureia"],"excluir":["urina","24h","24horas","clearance","depuracao"],"campo":[],"unidade":"mg/dL","faixas":[{"de":"0d","ate":"1a","min":9,"max":41},{"de":"1a","ate":"18a","min":11,"max":39},{"de":"18a","ate":"61a","min":13,"max":43},{"de":"61a","ate":"91a","min":17,"max":49},{"de":"91a","min":21,"max":66}]},{"id":"creatinina","nome":"Creatinina","siglas":["CREA","CRE"],"nomes":["creatinina"],"excluir":["urina","24h","24horas","clearance","depuracao","creatinofosfoquinase"],"campo":[],"unidade":"mg/dL","prioridade":"tabela","faixas":[{"sexo":"M","de":"0d","ate":"5d","min":0.3,"max":1.0},{"sexo":"M","de":"5d","ate":"4a","min":0.2,"max":0.4},{"sexo":"M","de":"4a","ate":"12a","min":0.3,"max":0.7},{"sexo":"M","de":"12a","ate":"18a","min":0.5,"max":1.0},{"sexo":"M","de":"18a","ate":"61a","min":0.9,"max":1.3},{"sexo":"M","de":"61a","ate":"91a","min":0.8,"max":1.3},{"sexo":"M","de":"91a","min":1.0,"max":1.7},{"sexo":"F","de":"0d","ate":"5d","min":0.3,"max":1.0},{"sexo":"F","de":"5d","ate":"4a","min":0.2,"max":0.4},{"sexo":"F","de":"4a","ate":"12a","min":0.3,"max":0.7},{"sexo":"F","de":"12a","ate":"18a","min":0.5,"max":1.0},{"sexo":"F","de":"18a","ate":"61a","min":0.6,"max":1.1},{"sexo":"F","de":"61a","ate":"91a","min":0.6,"max":1.2},{"sexo":"F","de":"91a","min":0.6,"max":1.3}]},{"id":"bilirrubina_direta","nome":"Bilirrubina direta","siglas":["BILI","BILIR","BD"],"nomes":["bilirrubina"],"excluir":["urina"],"campo":["direta"],"campo_excluir":["indireta"],"campo_unico_siglas":["BD"],"unidade":"mg/dL","faixas":[{"max":0.2,"max_excl":true}]},{"id":"bilirrubina_indireta","nome":"Bilirrubina indireta","siglas":["BILI","BILIR","BI"],"nomes":["bilirrubina"],"excluir":["urina"],"campo":["indireta"],"campo_unico_siglas":["BI"],"unidade":"mg/dL","faixas":[{"max":1.1,"max_excl":true}]},{"id":"bilirrubina_total","nome":"Bilirrubina total","siglas":["BILI","BILIR","BT"],"nomes":["bilirrubina"],"excluir":["urina"],"campo":["total"],"campo_unico_siglas":["BT"],"unidade":"mg/dL","faixas":[{"de":"0d","ate":"1d","min":2.0,"max":6.0},{"de":"1d","ate":"3d","min":6.0,"max":10.0},{"de":"3d","ate":"6d","min":4.0,"max":8.0},{"de":"6d","ate":"61a","min":0.3,"max":1.2},{"de":"61a","ate":"91a","min":0.2,"max":1.1},{"de":"91a","min":0.2,"max":0.9}]},{"id":"tgo","nome":"TGO (AST)","siglas":["TGO","AST"],"nomes":["tgo","aspartatoaminotransferase","transaminaseoxalacetica"],"excluir":[],"campo":[],"unidade":"U/L","faixas":[{"sexo":"M","max":35,"max_excl":true},{"sexo":"F","max":31,"max_excl":true}]},{"id":"tgp","nome":"TGP (ALT)","siglas":["TGP","ALT"],"nomes":["tgp","alaninaaminotransferase","transaminasepiruvica"],"excluir":[],"campo":[],"unidade":"U/L","faixas":[{"sexo":"M","max":45,"max_excl":true},{"sexo":"F","max":34,"max_excl":true}]},{"id":"ggt","nome":"Gama GT","siglas":["GGT"],"nomes":["gamagt","gamaglutamil"],"excluir":[],"campo":[],"unidade":"U/L","faixas":[{"sexo":"M","max":55,"max_excl":true},{"sexo":"F","max":38,"max_excl":true}]},{"id":"pcr","nome":"Proteína C reativa","siglas":["PCRP"],"nomes":["proteinacreativa"],"excluir":["chikungunya","zika","dengue","covid","sarscov","influenza","ultrassensivel"],"campo":[],"unidade":"mg/L","faixas":[{"max":5.0,"max_excl":true}]},{"id":"dhl","nome":"Desidrogenase láctica (DHL/LDH)","siglas":["LDH2","LDH","DHL"],"nomes":["desidrogenaselactica"],"excluir":["liquor","liquido","pleural","ascitico"],"campo":[],"unidade":"U/L","faixas":[{"de":"0d","ate":"4d","min":290,"max":775},{"de":"4d","ate":"10d","min":545,"max":2000},{"de":"10d","ate":"24m","min":180,"max":430},{"de":"24m","ate":"12a","min":110,"max":295},{"de":"12a","ate":"61a","min":100,"max":190},{"de":"61a","min":110,"max":210}]},{"id":"albumina","nome":"Albumina","siglas":["ALBU","ALB"],"nomes":["albumina"],"excluir":["urina","micro","24h","liquor","liquido"],"campo":[],"unidade":"g/dL","faixas":[{"de":"0d","ate":"5d","min":2.8,"max":4.4},{"de":"5d","ate":"15a","min":3.8,"max":5.4},{"de":"15a","ate":"20a","min":3.2,"max":4.5},{"de":"20a","ate":"61a","min":3.5,"max":5.2},{"de":"61a","ate":"91a","min":3.2,"max":4.6},{"de":"91a","min":2.9,"max":4.5}]},{"id":"fosfatase_alcalina","nome":"Fosfatase alcalina","siglas":["FAL","FALC","FA"],"nomes":["fosfatasealcalina"],"excluir":[],"campo":[],"unidade":"U/L","faixas":[{"sexo":"M","de":"0d","ate":"30d","min":75,"max":316},{"sexo":"M","de":"30d","ate":"1a","min":82,"max":383},{"sexo":"M","de":"1a","ate":"4a","min":104,"max":345},{"sexo":"M","de":"4a","ate":"7a","min":93,"max":309},{"sexo":"M","de":"7a","ate":"10a","min":86,"max":315},{"sexo":"M","de":"10a","ate":"13a","min":42,"max":362},{"sexo":"M","de":"13a","ate":"16a","min":74,"max":390},{"sexo":"M","de":"16a","ate":"19a","min":52,"max":171},{"sexo":"M","de":"19a","min":30,"max":120},{"sexo":"F","de":"0d","ate":"30d","min":48,"max":406},{"sexo":"F","de":"30d","ate":"1a","min":124,"max":341},{"sexo":"F","de":"1a","ate":"4a","min":108,"max":317},{"sexo":"F","de":"4a","ate":"7a","min":96,"max":297},{"sexo":"F","de":"7a","ate":"10a","min":69,"max":325},{"sexo":"F","de":"10a","ate":"13a","min":51,"max":332},{"sexo":"F","de":"13a","ate":"16a","min":50,"max":162},{"sexo":"F","de":"16a","ate":"19a","min":47,"max":119},{"sexo":"F","de":"19a","min":30,"max":120}]},{"id":"fosforo","nome":"Fósforo","siglas":["P+","P","FOS","FOSF"],"nomes":["fosforo"],"excluir":["urina","24h","24horas"],"campo":[],"unidade":"mg/dL","faixas":[{"sexo":"M","de":"0d","ate":"30d","min":3.9,"max":6.9},{"sexo":"M","de":"30d","ate":"1a","min":3.5,"max":6.6},{"sexo":"M","de":"1a","ate":"4a","min":3.1,"max":6.0},{"sexo":"M","de":"4a","ate":"7a","min":3.3,"max":5.6},{"sexo":"M","de":"7a","ate":"10a","min":3.0,"max":5.4},{"sexo":"M","de":"10a","ate":"13a","min":3.2,"max":5.7},{"sexo":"M","de":"13a","ate":"16a","min":2.9,"max":5.1},{"sexo":"M","de":"16a","ate":"19a","min":2.7,"max":4.9},{"sexo":"M","de":"19a","min":2.7,"max":4.5},{"sexo":"F","de":"0d","ate":"30d","min":4.3,"max":7.7},{"sexo":"F","de":"30d","ate":"1a","min":3.7,"max":6.5},{"sexo":"F","de":"1a","ate":"4a","min":3.4,"max":6.0},{"sexo":"F","de":"4a","ate":"7a","min":3.2,"max":5.5},{"sexo":"F","de":"7a","ate":"10a","min":3.1,"max":5.5},{"sexo":"F","de":"10a","ate":"13a","min":3.3,"max":5.3},{"sexo":"F","de":"13a","ate":"16a","min":2.8,"max":4.8},{"sexo":"F","de":"16a","ate":"19a","min":2.5,"max":4.8},{"sexo":"F","de":"19a","min":2.7,"max":4.5}]},{"id":"ferro","nome":"Ferro sérico","siglas":["FERO","FE","FERRO"],"nomes":["ferroserico"],"excluir":["capacidade","fixacao","ferritina","saturacao"],"campo":[],"unidade":"ug/dL","faixas":[{"de":"0d","ate":"28d","min":100,"max":250},{"de":"28d","ate":"7a","min":40,"max":100},{"de":"7a","ate":"18a","min":50,"max":120},{"sexo":"M","de":"18a","min":65,"max":175},{"sexo":"F","de":"18a","min":50,"max":170}]},{"id":"colesterol_total","nome":"Colesterol total","siglas":["COT","COL","CT","COLT"],"nomes":["colesteroltotal"],"excluir":["hdl","ldl","vldl"],"campo":[],"unidade":"mg/dL","faixas":[{"de":"0d","ate":"20a","max":170,"max_excl":true},{"de":"20a","max":190,"max_excl":true}]},{"id":"hdl","nome":"Colesterol HDL","siglas":["COHDL","HDL"],"nomes":["hdl"],"excluir":["ldl","vldl","naohdl"],"campo":[],"unidade":"mg/dL","faixas":[{"de":"0d","ate":"20a","min":45,"min_excl":true},{"de":"20a","min":40,"min_excl":true}]},{"id":"triglicerides","nome":"Triglicérides (com jejum)","siglas":["TRIGL","TRIG","TG","DTRIG"],"nomes":["triglicer"],"excluir":[],"campo":[],"unidade":"mg/dL","faixas":[{"de":"0d","ate":"10a","max":75,"max_excl":true},{"de":"10a","ate":"20a","max":90,"max_excl":true},{"de":"20a","max":150,"max_excl":true}]},{"id":"glicose","nome":"Glicose","siglas":["GLI","GLIC","GLICO"],"nomes":["glicose","glicemia"],"excluir":["urina","liquor","liquido","curva","tolerancia","posprandial","capilar","hemoglobinaglicada"],"campo":[],"gaso":["gli","glu","glicose"],"unidade":"mg/dL","faixas":[{"min":70,"max":99}]},{"id":"amilase","nome":"Amilase","siglas":["AMIL","AMILT"],"nomes":["amilase"],"excluir":["urina","24h","pancreatica"],"campo":[],"unidade":"U/L","faixas":[{"min":28,"max":100}]},{"id":"cpk","nome":"CPK (CK total)","siglas":["CPK","CK"],"nomes":["creatinofosfoquinase","creatinoquinase","cpk"],"excluir":["mb","massa"],"campo":[],"unidade":"U/L","faixas":[{"sexo":"M","min":35,"max":232},{"sexo":"F","min":21,"max":215}]},{"id":"calcio_total","nome":"Cálcio total","siglas":["CA+","CA","CAT"],"nomes":["calciototal"],"excluir":["ionico","ionizado","urina","24h"],"campo":[],"unidade":"mg/dL","faixas":[{"de":"0d","ate":"1a","min":8.7,"max":11.0},{"de":"1a","ate":"19a","min":9.3,"max":10.6},{"de":"19a","min":8.6,"max":10.3}]},{"id":"magnesio","nome":"Magnésio","siglas":["MG+","MG","MAG"],"nomes":["magnesio"],"excluir":["urina","24h"],"campo":[],"unidade":"mg/dL","faixas":[{"de":"0d","ate":"5m","min":1.5,"max":2.2},{"de":"5m","ate":"6a","min":1.7,"max":2.3},{"de":"6a","ate":"13a","min":1.7,"max":2.1},{"de":"13a","min":1.7,"max":2.4}]},{"id":"lipase","nome":"Lipase","siglas":["LIPA","LIP","LIPAS"],"nomes":["lipase"],"excluir":[],"campo":[],"unidade":"U/L","faixas":[{"min":13,"max":60}]},{"id":"lactato","nome":"Lactato","siglas":["LACT","LAC","ACLAT","LACTATO"],"nomes":["lactato"],"excluir":["liquor","liquido","desidrogenase"],"campo":[],"gaso":["lac","lactato"],"unidade":"mmol/L","faixas":[{"material":"venoso","min":0.5,"max":2.2},{"material":"arterial","min":0.5,"max":1.6}]},{"id":"sodio","nome":"Sódio","siglas":["NA+","NA"],"nomes":["sodio"],"excluir":["urina","24h"],"campo":[],"gaso":["na"],"unidade":"mmol/L","equivalentes":["mEq/L"],"faixas":[{"de":"0d","ate":"91a","min":136,"max":145},{"de":"91a","min":132,"max":146}]},{"id":"potassio","nome":"Potássio","siglas":["K+","K"],"nomes":["potassio"],"excluir":["urina","24h"],"campo":[],"gaso":["k"],"unidade":"mmol/L","equivalentes":["mEq/L"],"faixas":[{"min":3.5,"max":5.1}]}]}'
+# <<< REFERENCIAS_EMBUTIDAS
+
+
+def _ref_candidatos():
+    """Onde procurar o referencias.json, em ordem: ZION_REFERENCIAS, pasta real do zion.py, pasta do
+    link/cópia, diretório atual, ~/.config/zion-cli/."""
+    c = [os.environ.get("ZION_REFERENCIAS") or "", REFERENCIAS_ARQ,
+         os.path.join(os.path.dirname(os.path.abspath(__file__)), "referencias.json"),
+         os.path.join(os.getcwd(), "referencias.json"),
+         os.path.join(os.path.expanduser("~"), ".config", "zion-cli", "referencias.json")]
+    out = []
+    for p in c:
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
 def _ref_tabela_carregar():
-    global _REF_TAB
+    global _REF_TAB, _REF_FONTE
     if _REF_TAB is None:
-        try:
-            d = json.load(open(REFERENCIAS_ARQ, encoding="utf-8"))
-            tab = []
-            for e in d.get("exames") or []:
-                e = dict(e)
-                e["_siglas"] = {str(s).upper() for s in e.get("siglas") or []}
-                e["_nomes"] = [_slug(s) for s in e.get("nomes") or []]
-                e["_excluir"] = [_slug(s) for s in e.get("excluir") or []]
-                e["_campo"] = [_slug(s) for s in e.get("campo") or []]
-                e["_campo_excl"] = [_slug(s) for s in e.get("campo_excluir") or []]
-                e["_gaso"] = {_slug(s) for s in e.get("gaso") or []}
-                e["_unico"] = {str(s).upper() for s in e.get("campo_unico_siglas") or []}
-                tab.append(e)
-            _REF_TAB = tab
-        except FileNotFoundError:
-            sys.stderr.write(f"AVISO: {REFERENCIAS_ARQ} não encontrado — conferência só com a referência do Tasy\n")
-            _REF_TAB = []
+        d = None
+        for p in _ref_candidatos():
+            if os.path.isfile(p):
+                try:
+                    d = json.load(open(p, encoding="utf-8")); _REF_FONTE = p
+                    break
+                except Exception as e:
+                    sys.stderr.write(f"\n!!! ATENÇÃO: {p} inválido ({e}) — tentando o próximo\n")
+        if d is None:
+            d = json.loads(_REF_EMBUTIDA_JSON); _REF_FONTE = "EMBUTIDA"
+            sys.stderr.write("\n" + "!" * 78 + "\n!!! ATENÇÃO: referencias.json NÃO encontrado ao lado do zion.py nem em "
+                             "ZION_REFERENCIAS/cwd/~/.config/zion-cli.\n!!! Usando a cópia EMBUTIDA no zion.py. Rode o zion.py "
+                             "de dentro do clone do repositório (git pull).\n" + "!" * 78 + "\n")
+        tab = []
+        for e in d.get("exames") or []:
+            e = dict(e)
+            e["_siglas"] = {str(s).upper() for s in e.get("siglas") or []}
+            e["_nomes"] = [_slug(s) for s in e.get("nomes") or []]
+            e["_excluir"] = [_slug(s) for s in e.get("excluir") or []]
+            e["_campo"] = [_slug(s) for s in e.get("campo") or []]
+            e["_campo_excl"] = [_slug(s) for s in e.get("campo_excluir") or []]
+            e["_gaso"] = {_slug(s) for s in e.get("gaso") or []}
+            e["_unico"] = {str(s).upper() for s in e.get("campo_unico_siglas") or []}
+            tab.append(e)
+        if not tab:
+            sys.exit("ERRO: tabela de referência vazia — a conferência não pode seguir sem ela.")
+        _REF_TAB = tab
     return _REF_TAB
+
+
+def _ref_fonte_txt():
+    tab = _ref_tabela_carregar()
+    return f"{_REF_FONTE} ({len(tab)} exames)"
+
+
+def cmd_referencias(embutir=False):
+    """Mostra de onde a tabela foi carregada; --embutir grava o referencias.json dentro do zion.py."""
+    me = os.path.realpath(__file__)
+    if embutir:
+        d = json.load(open(REFERENCIAS_ARQ, encoding="utf-8"))
+        emb = json.dumps(d, ensure_ascii=False, separators=(",", ":"))
+        src = open(me, encoding="utf-8").read()
+        i = src.index("# >>> REFERENCIAS_EMBUTIDAS\n"); j = src.index("# <<< REFERENCIAS_EMBUTIDAS")
+        src = src[:i] + "# >>> REFERENCIAS_EMBUTIDAS\n_REF_EMBUTIDA_JSON = " + repr(emb) + "\n" + src[j:]
+        open(me, "w", encoding="utf-8").write(src)
+        print(f"Cópia embutida atualizada a partir de {REFERENCIAS_ARQ} ({len(d.get('exames') or [])} exames). "
+              "Faça commit do zion.py e do referencias.json.")
+        return
+    print("Tabela de referência em uso: " + _ref_fonte_txt())
+    if _REF_FONTE != "EMBUTIDA":
+        igual = json.load(open(_REF_FONTE, encoding="utf-8")) == json.loads(_REF_EMBUTIDA_JSON)
+        print("Cópia embutida no zion.py: " + ("igual ao arquivo" if igual else
+              "DIFERENTE do arquivo (rode `python3 zion.py referencias --embutir`)"))
+    for e in _ref_tabela_carregar():
+        print(f"  {'/'.join(e.get('siglas') or [])}: {(e.get('nomes') or [''])[0]}")
 
 
 def _unid_norm(u):
@@ -5292,6 +5357,28 @@ def _ref_tabela(vo, x):
             "txt": f"{_faixa_txt(f)} {e.get('unidade')} (tabela DB{', ' + quem if quem else ''}{nota_un})"}
 
 
+_RE_FAIXA_TXT = re.compile(r"^\s*(\d[\d.,]*)\s*%?\s*(?:a|-|–|até)\s*(\d[\d.,]*)\s*[^\d]*$", re.I)
+
+
+def _num_br(t):
+    t = t.strip()
+    if re.fullmatch(r"\d{1,3}(\.\d{3})+(,\d+)?", t):
+        t = t.replace(".", "")
+    return float(t.replace(",", "."))
+
+
+def _faixa_do_texto(ds):
+    """"37% a 47%" / "12,0 a 17,5 g/dl" -> (37.0, 47.0). Só UMA faixa "A a B" com A < B; senão None."""
+    m = _RE_FAIXA_TXT.match(str(ds or ""))
+    if not m:
+        return None
+    try:
+        a, b = _num_br(m.group(1)), _num_br(m.group(2))
+    except ValueError:
+        return None
+    return (a, b) if a < b else None
+
+
 def _ref_avaliar(vo):
     """Classifica cada campo com valor: dentro, fora, qualitativo alterado, sem referência ou
     divergente (Tasy × tabela do laboratório). Ver referencias.json e o comentário acima."""
@@ -5322,6 +5409,15 @@ def _ref_avaliar(vo):
                 lo, hi = _num_or_none(x.get("prMinimo")), _num_or_none(x.get("prMaximo"))
             else:
                 lo, hi = _num_or_none(x.get("qtMinima")), _num_or_none(x.get("qtMaxima"))
+            if lo is None and hi is None:
+                # campo numérico sem qtMinima/qtMaxima: usa a faixa do próprio Tasy em prMinimo/prMaximo
+                # ou no texto da referência ("37% a 47%"), se houver UMA faixa clara e na mesma escala
+                lo, hi = _num_or_none(x.get("prMinimo")), _num_or_none(x.get("prMaximo"))
+                if lo is None and hi is None:
+                    fx = _faixa_do_texto(x.get("dsReferencia"))
+                    if fx and fx[0] / 10 <= v <= fx[1] * 10:
+                        lo, hi = fx
+                        notas.append(f"{nm}: faixa lida do texto da referência do Tasy ({x.get('dsReferencia')})")
             faixa = f"{vtxt(lo) if lo is not None else '-'}–{vtxt(hi) if hi else '-'}"
             # faixa do Tasy vazia ou "0,00 a 0,00" (mínimo e máximo zero/ausentes) = SEM faixa -> usa a tabela
             tasy_tem = not (lo in (None, 0) and hi in (None, 0))
@@ -5703,6 +5799,7 @@ def cmd_lote(z, a):
     elif a.etapa == "digitar":
         ok, bad = lote_digitar(z, a, itens)
     elif a.etapa == "conferir":
+        print(f"Tabela de referência: {_ref_fonte_txt()}")
         lote_conferir(z, a, a.arquivo, itens); return
     elif a.etapa == "liberar":
         lote_liberar(z, a, a.arquivo, itens); return
@@ -5718,9 +5815,9 @@ def main():
                 "  1) digitacao / lote digitacao   (só colocar em Digitação)\n"
                 "  2) resultado|hemo|gaso / lote digitar   (só salvar; sem histórico/PEP)\n"
                 "  3) historico / lote conferir   (LER anteriores e PEP)\n"
-                "  4) liberar / lote liberar   (um exame por vez, só os coerentes)\n"
+                "  4) liberar / lote liberar   (um exame por vez; DENTRO_REFERENCIA e COERENTE DEVEM ser liberados, sem precisar de PEP)\n"
                 "`liberar` confere sozinho antes de aprovar (referência/anteriores/PEP) e recusa o que não for liberável. --pep-ok só depois de LER o PEP.\n"
-                "TR/tipagem/Coombs: só com resultado anterior igual ou PEP confirmado. Hemo/gaso/bioquímica: só dentro da referência.\n"
+                "TR/tipagem/Coombs: só com resultado anterior igual ou PEP confirmado. Hemo/gaso/bioquímica: só dentro da referência. `python3 zion.py referencias` mostra a tabela em uso (rode do clone, após git pull).\n"
                 "Faça só a etapa que o usuário pediu. Login derruba a outra sessão do usuário: só com autorização."))
     ap.add_argument("--user", dest="cli_user", default=None,
                     help="usuário do Zion (senão ZION_USER / arquivo salvo / prompt)")
@@ -5827,8 +5924,13 @@ def main():
             x.add_argument("--dry-run", action="store_true", help="baixa e confere os PDFs, mas não grava no Tasy")
             x.add_argument("--substituir", action="store_true", help="troca o anexo existente (Desfazer exame PDF + novo)")
             x.add_argument("--salvar-pdf", help="guarda uma cópia dos PDFs nesta pasta")
+    rf = sp.add_parser("referencias", help="só leitura, sem Tasy: mostra a tabela de referência em uso e de onde veio")
+    rf.add_argument("--embutir", action="store_true", help="copia o referencias.json para dentro do zion.py (fallback)")
     a = ap.parse_args()
     t0 = time.time()
+    if a.cmd == "referencias":
+        cmd_referencias(a.embutir)
+        return
 
     if a.cmd == "db-login":
         cmd_db_login(a.cpf, a.password_stdin, a.serv_sol, a.otp)
