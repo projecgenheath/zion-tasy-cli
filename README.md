@@ -12,7 +12,7 @@ python3 -m pip install -r requirements.txt   # só precisa de requests
 python3 zion.py login                         # pede usuário e senha (sem eco), grava em ~/.config/zion-cli/
 python3 zion.py whoami
 python3 zion.py fila --resumo
-python3 zion.py referencias                   # confere a tabela de referência em uso (deve mostrar 27+ exames)
+python3 zion.py referencias                   # confere a tabela de referência em uso (deve mostrar 50+ exames)
 ```
 - **Sempre rode o zion.py de dentro do clone** (`git pull` antes de trabalhar). Ele lê `referencias.json` e `templates.json` da pasta real do script (symlink em `~/bin` funciona). Copiado sozinho para outro lugar, ele avisa com `!!! ATENÇÃO` e usa a cópia da tabela embutida no próprio zion.py.
 - URL, perfil e setor padrão estão no `.env.example`. Não há usuário fixo no repositório.
@@ -50,7 +50,7 @@ Siga todas, sempre. Se uma regra do usuário for mais restrita, vale a do usuár
 
 > **O que está liberável DEVE ser liberado.** Quando o usuário pediu para liberar (ou o fluxo completo), todo exame que a conferência classificou como **`DENTRO_REFERENCIA` ou `COERENTE`** **deve** ser liberado com `python3 zion.py liberar AT --exame SIGLA` (ou `lote liberar ARQ`). **Não precisa de PEP nem de resultado anterior** para isso: a referência (Tasy + tabela do laboratório, seção 3A) basta. Não deixe exame liberável parado "por cautela". Digitar e conferir **não** liberam nada.
 > - `--pep-ok` é só para `PEP_A_CONFIRMAR`. Nas outras classes não liberáveis, deixe digitado e avise o usuário com o motivo que o CLI imprimiu.
-> - Antes de liberar, a primeira linha do `liberar`/`lote conferir` deve mostrar `Tabela de referência: .../referencias.json (27 exames)`. Se aparecer `EMBUTIDA` ou `!!! ATENÇÃO`, faça `git pull` no clone e rode de lá.
+> - Antes de liberar, a primeira linha do `liberar`/`lote conferir` deve mostrar `Tabela de referência: .../referencias.json (50 exames)`. Se aparecer `EMBUTIDA` ou `!!! ATENÇÃO`, faça `git pull` no clone e rode de lá.
 
 | Tipo de exame | Libera quando | Senão |
 |---|---|---|
@@ -198,6 +198,7 @@ A conferência (`liberar`, `lote conferir`, `historico`) decide "dentro/fora da 
    - **qualquer outro 0** (eosinófilos, bastonetes, plaquetas, HCO3, Hct, cálcio iônico...) **NÃO é ignorado**: fica `SEM_REFERENCIA` ("valor 0 sem referência — confira").
    Campo com valor diferente de 0 e sem referência continua `SEM_REFERENCIA`.
 6. EAS (URN1): o campo simples do sedimento (Células epiteliais, Leucócitos (Piócitos), Hemácias) é só a cópia do par; vale a faixa do campo **(x1000)**. Sem o (x1000) preenchido, o simples sem faixa bloqueia.
+7. **Hemograma (HC):** entradas `hc_*` do `referencias.json` (laudo oficial do laboratório), com `"prioridade": "tabela"` — a faixa do Tasy no HC só aparece como informativa (ela diverge do laudo, ex.: HCM do RN 30–36 no Tasy × 27–31 no laudo; plaquetas 150–450 em mil no Tasy). Percentual e absoluto separados pela unidade do campo; "Leucócitos" (em mil) e "Leucócitos Totais" (absoluto) avaliados cada um na sua escala; plaquetas gravadas em mil (< 2000) são comparadas ×1000. Faixas por sexo (série vermelha adulta/infantil ≥ 3 anos, VPM) → sexo desconhecido = `SEM_REFERENCIA`. Blastos, promielócitos, mielócitos, metamielócitos, prolinfócitos, células imaturas, atípicos/reativos não têm faixa: 0 = normal, outro valor trava. Criança < 15 anos: o laudo pede bastonetes ≥ 2% e eosinófilos ≥ 4% (até 15 anos) — bastão 0 ou eos baixo sai `FORA_REFERENCIA`.
 6. A saída mostra a faixa usada e a fonte, por exemplo `Creatinina 0.8 (ref 0.6–1.1 mg/dL (tabela DB, F 30 anos); Tasy 0.31–0.92)`.
 
 **Exames na tabela** (sigla do Tasy neste hospital → faixa): Ácido úrico `AURS`; Ureia `UREA`; Creatinina `CREA`; Bilirrubina total/direta/indireta `BILI` (campos); TGO `TGO`; TGP `TGP`; Gama GT `GGT`; PCR `PCRP` (só se a unidade for mg/L); DHL `LDH2`; Albumina `ALBU`; Fosfatase alcalina `FAL`; Fósforo `P+`; Ferro `FERO`; Cálcio total `CA+`; Magnésio `MG+`; Lipase `LIPA`; Amilase `AMIL`; Lactato `LACT`; Sódio `NA+`; Potássio `K+`; Glicose `GLI`; Colesterol total, HDL, Triglicérides, CPK (por sigla/nome quando existirem). Na gasometria (GASV/GASA): Na, K, glicose e lactato pelo nome do campo.
@@ -471,7 +472,7 @@ Windows: `%APPDATA%\zion-cli\`.
 | `bloqueado` / sorologia | exame externo | `db-anexar`; nunca digitar |
 | `Conferência de N min atrás` | conferência > 60 min | `lote conferir` de novo |
 | `liberar` parou em 35 ou com consistência | aviso do Tasy | avise; não insista |
-| Nenhum exame liberado / quase tudo `SEM_REFERENCIA` | clone antigo (sem `referencias.json` atualizado) ou zion.py copiado sozinho | `git pull` no clone; `python3 zion.py referencias` deve mostrar o arquivo do clone e 27+ exames. Hemograma com diferencial sem faixa no Tasy continua `SEM_REFERENCIA` (conhecido): avise o usuário |
+| Nenhum exame liberado / quase tudo `SEM_REFERENCIA` | clone antigo (sem `referencias.json` atualizado) ou zion.py copiado sozinho | `git pull` no clone; `python3 zion.py referencias` deve mostrar o arquivo do clone e 50+ exames. Hemograma de criança < 15 anos com bastonetes < 2% ou eosinófilos < 4% sai `FORA_REFERENCIA` (laudo): avise o usuário |
 | `recusado na conferência (CLASSE)` | exame não liberável pela regra 1.4 | deixe digitado e avise o usuário com o motivo; `--pep-ok` só se a classe for `PEP_A_CONFIRMAR` e você leu o PEP confirmando |
 
 ## 11. Erros proibidos (já aconteceram)
