@@ -165,7 +165,7 @@ Vários atendimentos com comandos avulsos: rode cada etapa para todos (`digitaca
 | `PEP_A_CONFIRMAR` | TR/tipagem sem anterior igual (inclusive NR/negativo), ou exame sem referência com trecho no PEP | **Só com `pep_ok`** | Ler o trecho do PEP. Confirma → sigla em `pep_ok`. Não confirma ou não há trecho → não liberar e avisar |
 | `FORA_REFERENCIA` | Valor fora da referência | Não | Fica digitado. Avisar com o valor e a referência |
 | `CAMPO_PENDENTE` | Falta preencher campo que o Tasy usa para calcular (ex.: Idade da creatinina em ≥ 18 anos → eTFG não calculado) | Não | Avisar; preencher o campo (etapa 2) e conferir de novo |
-| `REF_DIVERGENTE` | Faixa do Tasy e tabela do laboratório (`referencias.json`) discordam para este valor | Não | Fica digitado. Avisar com as duas faixas (seção 3A) |
+| `REF_DIVERGENTE` | Não é mais gerado: quando Tasy e tabela têm faixa, vale a tabela (seção 3A) | — | — |
 | `QUALITATIVO_ALTERADO` | Qualitativo alterado (REAGENTE/Positivo) | Não | Fica digitado. Avisar |
 | `INCOERENTE` | Diverge do anterior (mudança > 50%, passou a crítico, qualitativo diferente) ou o PEP diz o contrário | Não | Fica digitado. Avisar com o motivo; conferir se houve erro de digitação |
 | `SEM_REFERENCIA` | Sem referência determinável e sem trecho no PEP | Não | Fica digitado. Avisar |
@@ -173,7 +173,7 @@ Vários atendimentos com comandos avulsos: rode cada etapa para todos (`digitaca
 | `SEM_RESULTADO` | Nada salvo no exame | Nunca | Digitar (etapa 2) ou avisar que falta no papel |
 | `FORA_DIGITACAO` | Status diferente de 30 | Nunca | Ver `listar`; colocar em Digitação se o usuário pedir |
 | `NAO_ENCONTRADO` | Sigla do arquivo não está em Digitação no atendimento | Nunca | Conferir a sigla/atendimento e avisar |
-- `pep_ok` só vale para `PEP_A_CONFIRMAR`. Não destrava `FORA_REFERENCIA`, `REF_DIVERGENTE`, `CAMPO_PENDENTE`, `INCOERENTE`, `QUALITATIVO_ALTERADO`, `SEM_REFERENCIA` nem as classes "nunca".
+- `pep_ok` só vale para `PEP_A_CONFIRMAR`. Não destrava `FORA_REFERENCIA`, `CAMPO_PENDENTE`, `INCOERENTE`, `QUALITATIVO_ALTERADO`, `SEM_REFERENCIA` nem as classes "nunca".
 - Com `historico` (avulso) não há classe: aplique você a mesma tabela lendo os alertas (`AVISO: sem resultado anterior`, `mudança grande`, `passou a faixa crítica`, `AVISO: sem evolução clínica compatível`) e a referência.
 
 Listas de siglas no código (`zion.py`): `SIGLAS_TR_TIPAGEM` (+ qualquer sigla `TR*` e nomes com "teste rápido", "tipagem", "coombs", "fator rh", "grupo/tipo sanguíneo", "vdrl", "sífilis"), `SIGLAS_HEMO`, `GASO_SIGLAS`, `SIGLAS_BIOQUIMICA`, `EXAMES_EXTERNOS_BLOQUEADOS`.
@@ -185,11 +185,11 @@ A conferência (`liberar`, `lote conferir`, `historico`) decide "dentro/fora da 
 3. **Como combina:**
    | Situação | Resultado |
    |---|---|
-   | Tasy tem faixa e a tabela tem faixa | o valor precisa estar dentro das **duas**. As duas dizem dentro → dentro; as duas dizem fora → `FORA_REFERENCIA`; uma diz dentro e a outra fora → **`REF_DIVERGENTE`** (não libera; mostra as duas faixas) |
+   | Tasy tem faixa e a tabela tem faixa para o sexo/idade | vale a **tabela** (regra global, todos os exames). A faixa do Tasy aparece como "só informativo" e, se discordar, como nota ("Tasy diria ...; vale a tabela"). Não existe mais `REF_DIVERGENTE`
    | Só a tabela tem faixa | usa a tabela |
    | Só o Tasy tem faixa (tabela sem faixa para o sexo/idade, ou exame fora da tabela) | usa o Tasy |
    | Nenhuma das duas, ou sexo/idade desconhecidos e a faixa depende deles | `SEM_REFERENCIA` (não libera) |
-   | Exame com `"prioridade": "tabela"` no `referencias.json` (hoje: **creatinina**) | vale **só a tabela**; a faixa do Tasy aparece como "só informativo" e nunca gera `REF_DIVERGENTE`. Sem faixa na tabela (sexo/idade desconhecidos) → `SEM_REFERENCIA` |
+   | Exame com `"prioridade": "tabela"` no `referencias.json` (hoje: **creatinina** e **hemograma**) | igual à regra global; a diferença é que, sem faixa na tabela (sexo/idade desconhecidos), vira `SEM_REFERENCIA` em vez de usar o Tasy
    | Unidade do campo no Tasy diferente da tabela | a tabela é **ignorada** naquele campo (aviso na saída). Unidade vazia ou "." no Tasy: procura a unidade no texto da referência; se não achar, usa a da tabela e avisa. mEq/L = mmol/L (Na, K); µg/dL = ug/dL |
 4. Faixa do Tasy vazia ou **"0,00 a 0,00"** (mínimo e máximo zero/ausentes) = **sem faixa no Tasy** → vale a tabela.
 5. Campo numérico **= 0**, sem faixa no Tasy e fora da tabela:
@@ -227,7 +227,7 @@ A conferência (`liberar`, `lote conferir`, `historico`) decide "dentro/fora da 
 - `siglas`: CD_EXAME do Tasy. `nomes`: pedaço do nome do exame sem acento/espaço (usado se a sigla não bater). `excluir`: palavras no nome/material/campo que impedem o uso (urina, clearance…).
 - `campo`: para exame com vários campos (ex.: `["direta"]`); vazio = campo principal. `campo_excluir`: palavras que o campo não pode ter. `gaso`: nome do campo dentro da gasometria.
 - Faixa: `sexo` M/F (sem = ambos); `de`/`ate` com `d`, `m` ou `a`; `min`/`max` inclusivos; `min_excl`/`max_excl` = estrito. `material` só para venoso/arterial.
-- `"prioridade": "tabela"`: a tabela vence o Tasy naquele exame (o Tasy fica só informativo). Sem esse campo, Tasy e tabela precisam concordar.
+- A tabela sempre vence o Tasy quando tem faixa para o sexo/idade. `"prioridade": "tabela"` só muda o caso sem faixa na tabela: vira `SEM_REFERENCIA` em vez de usar o Tasy.
 - A primeira faixa que servir é usada. Teste com `historico AT` ou `liberar AT --exame SIGLA --dry-run`.
 
 ## 4. Referência de comandos
@@ -357,7 +357,7 @@ python3 zion.py historico 100001 --exame VDRL --exame HIV --notas 3
 4. Se **qualquer** exame pedido for recusado: **nada** é aprovado, o CLI imprime `Resumo: SIGLA: recusado na conferência (CLASSE)` e sai com código 1.
 5. Se todos forem liberáveis: aprova (35) e libera (40) **um exame por vez**, como na tela; no primeiro aviso/erro/consistência para e não segue. Nunca "Liberar todos".
 6. `--dry-run`: faz a conferência e mostra a decisão, sem aprovar nem liberar.
-7. `--pep-ok SIGLA`: você atesta que **leu** o trecho do PEP e ele confirma o resultado. Nunca use "por garantia". Não destrava `FORA_REFERENCIA`, `REF_DIVERGENTE`, `CAMPO_PENDENTE`, `INCOERENTE`, `QUALITATIVO_ALTERADO`, `SEM_REFERENCIA`, `EXTERNO`, `SEM_RESULTADO`, `FORA_DIGITACAO`, `NAO_ENCONTRADO`.
+7. `--pep-ok SIGLA`: você atesta que **leu** o trecho do PEP e ele confirma o resultado. Nunca use "por garantia". Não destrava `FORA_REFERENCIA`, `CAMPO_PENDENTE`, `INCOERENTE`, `QUALITATIVO_ALTERADO`, `SEM_REFERENCIA`, `EXTERNO`, `SEM_RESULTADO`, `FORA_DIGITACAO`, `NAO_ENCONTRADO`.
 8. Não existe opção para pular a conferência.
 - Ficou em 35 (aprovado, não liberado): avise o usuário para conferir na tela.
 ```bash

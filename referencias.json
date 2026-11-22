@@ -5,7 +5,7 @@
   "Faixa: sexo M/F (omitido = ambos), de/ate = idade na coleta, 'Nd' dias, 'Nm' meses, 'Na' anos completos; de inclusivo, ate EXCLUSIVO (omitido = sem limite).",
   "min/max inclusivos; min_excl/max_excl true = estrito ('Inferior a X' -> max X, max_excl true; 'Superior a X' -> min X, min_excl true).",
   "material: so para lactato (venoso/arterial). Sem faixa para o sexo/idade do paciente = SEM_REFERENCIA (nao libera).",
-  "prioridade: \"tabela\" = a faixa do Tasy vira so informativa (sem REF_DIVERGENTE); sem faixa na tabela = SEM_REFERENCIA. Omitido = Tasy e tabela precisam concordar.",
+  "Tasy e tabela com faixa: vale SEMPRE a tabela (Tasy so informativo). prioridade: \"tabela\" = alem disso, sem faixa na tabela (sexo/idade desconhecidos) = SEM_REFERENCIA em vez de usar o Tasy.",
   "Hemograma (HC): entradas hc_*; campo_unidade = só vale para campo com essa unidade (separa % de absoluto); so_siglas = não casa pelo nome do exame; escala \"mil\" = faixa em milhares e valor >= 1000 é dividido por 1000; \"abs\" = faixa absoluta e valor < 2000 é multiplicado por 1000 (plaquetas gravadas em mil)."],
  "exames": [
   {"id": "acido_urico", "nome": "Ácido úrico", "siglas": ["AURS", "ACURI", "AU", "URIC"], "nomes": ["acidourico"], "excluir": ["urina", "24h", "24horas", "volume"], "campo": [], "unidade": "mg/dL",
