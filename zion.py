@@ -5113,6 +5113,14 @@ def _hist_qual_anteriores(z, atend, cd, nr_atual, dias, cache, limite_presc=HIST
 REFERENCIAS_ARQ = os.path.join(os.path.dirname(os.path.abspath(__file__)), "referencias.json")
 _REF_TAB = None
 _REF_SUB_IGNORAR = ("observ", "idade", "etfg", "filtracao", "volume", "fracoes")
+# Valor 0 sem faixa: só estes campos auxiliares são tratados como vazios (ignorados). Qualquer outro 0
+# sem referência (eosinófilos, bastonetes, plaquetas, HCO3, Hct...) continua bloqueando (SEM_REFERENCIA).
+_CAMPO_AUX_ZERO = ("volume", "diurese", "peso", "altura", "idade", "tempodecoleta", "periodo", "24h", "24horas")
+# Hemograma: células que normalmente são 0 (0 = normal mesmo sem faixa no Tasy)
+_CELULAS_ZERO_NORMAL = ("blasto", "promielocito", "mielocito", "metamielocito", "atipico")
+# EAS (URN1): campo simples -> campo (x1000) do mesmo par (o simples é cópia de exibição)
+_EAS_PAR_SIMPLES = {"celulasepiteliais": "celulasepiteliaisx1000", "leucocitospiocitos": "leucocitosx1000",
+                    "hemacias": "hemaciasx1000"}
 _UNID_RE = re.compile(r"(?<![a-z])(mg/dl|mg/l|g/dl|g/l|u/l|ui/l|mmol/l|meq/l|ug/dl|mcg/dl|µg/dl)")
 
 
@@ -5318,10 +5326,22 @@ def _ref_avaliar(vo):
             # faixa do Tasy vazia ou "0,00 a 0,00" (mínimo e máximo zero/ausentes) = SEM faixa -> usa a tabela
             tasy_tem = not (lo in (None, 0) and hi in (None, 0))
             tasy_dentro = None
+            par = _EAS_PAR_SIMPLES.get(sl) if str(vo.get("cdExame") or "").upper() in ("URN1", "EAS") else None
+            if par and not tasy_tem and any(_slug(y.get("nmExame") or "") == par and sub_val(y) is not None
+                                            for y in vo.get("subExams") or []):
+                # EAS: campo simples do par de sedimento (13 = 13.000/mL); quem tem a faixa é o (x1000)
+                notas.append(f"{nm}: campo simples do par do sedimento — vale a faixa do campo (x1000)")
+                continue
             if v == 0 and not tasy_tem and _ref_entrada(vo, x) is None:
-                # campo auxiliar zerado sem nenhuma referência (ex.: "Volume Ácido Úrico" em soro): é campo vazio,
-                # igual ao filtro de "resultado salvo" da conferência — não bloqueia o exame
-                notas.append(f"{nm} = 0 sem referência: tratado como campo vazio (ignorado)")
+                if any(k in sl for k in _CAMPO_AUX_ZERO):
+                    # campo auxiliar zerado sem referência (ex.: "Volume Ácido Úrico" em soro) = campo vazio
+                    notas.append(f"{nm} = 0 sem referência: campo auxiliar vazio (ignorado)")
+                    continue
+                if any(k in sl for k in _CELULAS_ZERO_NORMAL):
+                    dentro.append(f"{nm} 0 (normal: célula imatura/atípica ausente)")
+                    continue
+                # 0 em resultado real sem referência (eosinófilos, bastonetes, plaquetas, HCO3, Hct...) NÃO é ignorado
+                sem_ref.append(f"{nm} 0 (valor 0 sem referência — confira; não é ignorado)")
                 continue
             if tasy_tem:
                 tasy_dentro = not ((lo is not None and lo != 0 and v < lo) or (hi and v > hi))

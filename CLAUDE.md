@@ -172,7 +172,12 @@ A conferência (`liberar`, `lote conferir`, `historico`) decide "dentro/fora da 
    | Exame com `"prioridade": "tabela"` no `referencias.json` (hoje: **creatinina**) | vale **só a tabela**; a faixa do Tasy aparece como "só informativo" e nunca gera `REF_DIVERGENTE`. Sem faixa na tabela (sexo/idade desconhecidos) → `SEM_REFERENCIA` |
    | Unidade do campo no Tasy diferente da tabela | a tabela é **ignorada** naquele campo (aviso na saída). Unidade vazia ou "." no Tasy: procura a unidade no texto da referência; se não achar, usa a da tabela e avisa. mEq/L = mmol/L (Na, K); µg/dL = ug/dL |
 4. Faixa do Tasy vazia ou **"0,00 a 0,00"** (mínimo e máximo zero/ausentes) = **sem faixa no Tasy** → vale a tabela.
-5. Campo numérico **= 0**, sem faixa no Tasy e fora da tabela (ex.: "Volume Ácido Úrico" no soro) = campo vazio: é ignorado e não bloqueia o exame (aparece como nota). Campo com valor diferente de 0 e sem referência continua `SEM_REFERENCIA`.
+5. Campo numérico **= 0**, sem faixa no Tasy e fora da tabela:
+   - **campo auxiliar** (nome com volume, diurese, peso, altura, idade, tempo de coleta, período, 24h) = campo vazio: ignorado, só aparece como nota (ex.: "Volume Ácido Úrico" no soro);
+   - **célula que normalmente é 0** no hemograma (blastos, promielócitos, mielócitos, metamielócitos, atípicos) = normal (dentro);
+   - **qualquer outro 0** (eosinófilos, bastonetes, plaquetas, HCO3, Hct, cálcio iônico...) **NÃO é ignorado**: fica `SEM_REFERENCIA` ("valor 0 sem referência — confira").
+   Campo com valor diferente de 0 e sem referência continua `SEM_REFERENCIA`.
+6. EAS (URN1): o campo simples do sedimento (Células epiteliais, Leucócitos (Piócitos), Hemácias) é só a cópia do par; vale a faixa do campo **(x1000)**. Sem o (x1000) preenchido, o simples sem faixa bloqueia.
 6. A saída mostra a faixa usada e a fonte, por exemplo `Creatinina 0.8 (ref 0.6–1.1 mg/dL (tabela DB, F 30 anos); Tasy 0.31–0.92)`.
 
 **Exames na tabela** (sigla do Tasy neste hospital → faixa): Ácido úrico `AURS`; Ureia `UREA`; Creatinina `CREA`; Bilirrubina total/direta/indireta `BILI` (campos); TGO `TGO`; TGP `TGP`; Gama GT `GGT`; PCR `PCRP` (só se a unidade for mg/L); DHL `LDH2`; Albumina `ALBU`; Fosfatase alcalina `FAL`; Fósforo `P+`; Ferro `FERO`; Cálcio total `CA+`; Magnésio `MG+`; Lipase `LIPA`; Amilase `AMIL`; Lactato `LACT`; Sódio `NA+`; Potássio `K+`; Glicose `GLI`; Colesterol total, HDL, Triglicérides, CPK (por sigla/nome quando existirem). Na gasometria (GASV/GASA): Na, K, glicose e lactato pelo nome do campo.
