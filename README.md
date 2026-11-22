@@ -1,410 +1,423 @@
 # zion-tasy-cli
 
-> ⚠️ **Faça SÓ o que o usuário pediu.** Pedido para colocar em digitação = só o comando de digitação e a confirmação dos atendimentos movidos. Não rode conferir, historico, fila nem resumo de resultados/liberações do dia sem pedido explícito. A comparação com o histórico/PEP é a etapa 3, depois de digitar todos (`historico` / `lote conferir`), não no momento de salvar.
+CLI em Python para operar o módulo de Laboratório do **Zion / Philips Tasy 5.04** (web) sem navegador:
+colocar exames em Digitação, digitar e salvar resultados (bioquímica, hemograma, gasometria, testes rápidos, EAS),
+conferir com resultados anteriores e PEP, liberar um exame por vez, anexar laudos do DB Diagnósticos e auditar os exames liberados.
 
-> **Ordem do trabalho (em lote):** 1) colocar TODOS os atendimentos em digitação; 2) digitar os resultados de todos (só salvar, rápido, sem histórico/PEP; `resultado`/`hemo`/`gaso` ou `lote digitar`); 3) conferir todos com o PEP e com os resultados anteriores (`historico` / `lote conferir`); 4) liberar (`liberar`, um exame por vez) segundo a regra: **hemograma (HC), gasometria e bioquímica** dentro da referência podem ser liberados mesmo sem histórico/PEP; se estiverem fora da referência ou incoerentes, ficam só digitados. **Testes rápidos e tipagens** (HIV, VDRL, TRS/sífilis, hepatites TR, outros TR, GP-TIP/tipagem/fator Rh, COOI/Coombs) só liberam com resultado anterior igual ou com confirmação no PEP (`pep_ok`: a IA atesta que leu o trecho). Vale também para NÃO REAGENTE/Negativo. Sem confirmação: classe `PEP_A_CONFIRMAR`, não liberar. Exame externo, sem resultado ou fora de Digitação nunca libera. Para vários atendimentos use os comandos em lote (veja **Trabalho em lote**: `lote digitacao/digitar/conferir/liberar ARQ`). Nunca faça um atendimento inteiro de cada vez. Quando o usuário pede só uma etapa, faça só aquela etapa.
+> **IAs:** as regras abaixo são obrigatórias. `AGENTS.md` e `CLAUDE.md` têm o mesmo conteúdo.
 
-## 🔐 Login: a IA pode fazer pela pessoa
+## Instalação e primeiro uso
+```bash
+python3 -m pip install -r requirements.txt   # só precisa de requests
+python3 zion.py login                         # pede usuário e senha (sem eco), grava em ~/.config/zion-cli/
+python3 zion.py whoami
+python3 zion.py fila --resumo
+```
+- URL, perfil e setor padrão estão no `.env.example`. Não há usuário fixo no repositório.
+- `pdftotext` (poppler-utils) é necessário só para `db-anexar`.
 
-- A pessoa pode mandar o **usuário e a senha direto no chat** da IA. Não precisa de formulário nem campo seguro.
-- A IA usa os dois direto, passando a senha **pelo stdin** (nunca como argumento):
+## 1. REGRAS OBRIGATÓRIAS (leia antes de qualquer comando)
+
+Siga todas, sempre. Se uma regra do usuário for mais restrita, vale a do usuário.
+
+### 1.1 Escopo
+1. Faça **só** o que o usuário pediu. Nada a mais.
+   - "Colocar em digitação" = só `digitacao` (ou `lote digitacao`) e informar quais atendimentos foram movidos. Sem digitar, sem conferir, sem liberar, sem resumo do dia.
+   - "Digitar" = só digitar e salvar. Não liberar.
+   - "Conferir" = só leitura. Não digitar, não liberar.
+   - "Liberar" = só depois da conferência (regra 1.3).
+2. Responda sempre em português do Brasil.
+
+### 1.2 Ordem do trabalho (sempre por etapas, para TODOS os atendimentos)
+1. **Etapa 1 — Digitação:** colocar **todos** os atendimentos em Digitação (status 30).
+2. **Etapa 2 — Digitar:** digitar e salvar os resultados de **todos**. Rápido: **sem** histórico, **sem** PEP. Conferir a releitura que o CLI imprime.
+3. **Etapa 3 — Conferir:** comparar **todos** com resultados anteriores e com o PEP (`lote conferir` ou `historico`).
+4. **Etapa 4 — Liberar:** liberar **só** os exames coerentes (regra 1.4), **um exame por vez**.
+- Só passe para a próxima etapa depois de terminar a atual em **todos** os atendimentos.
+- **Nunca** faça um atendimento inteiro (etapas 1→4) e depois o próximo.
+- Se o usuário pediu só uma etapa, faça só essa etapa e pare.
+
+### 1.3 Nunca liberar sem conferir
+1. **NUNCA** rode `liberar` ou `lote liberar` num exame sem antes ter rodado a etapa 3 (`lote conferir` ou `historico`) **naquele atendimento, nesta sessão de trabalho**.
+2. **NUNCA** libere sem ter **lido** a saída da conferência (classe, resultados anteriores e trechos do PEP).
+3. O comando avulso `liberar` **não confere nada**: ele aprova e libera qualquer exame em status 30 com resultado salvo. A conferência é responsabilidade sua. Prefira `lote liberar`, que só libera o que a conferência classificou como liberável.
+4. Conferência com mais de 60 min não vale: rode de novo.
+
+### 1.4 Regras de liberação
+| Tipo de exame | Libera quando | Senão |
+|---|---|---|
+| **Testes rápidos** (HIV, VDRL, TRS/sífilis, hepatites TR, TRTOXO, qualquer sigla `TR*`) e **tipagem / fator Rh / Coombs** (GP-TIP, TIP, ABO, COOI, COOD, CI, CD) | Resultado anterior **igual** **ou** confirmação lida no PEP. Vale também para NÃO REAGENTE / Negativo. | Só digitar e salvar. Não liberar. Avisar o usuário. |
+| **Hemograma, gasometria, bioquímica** (HC, GASV/GASA, CREA, UREA, NA+, K+, TGO, PCR, TAP…) | Dentro da referência, mesmo sem resultado anterior e sem PEP. | Fora da referência ou incoerente com o anterior/PEP: só digitar e salvar. Não aprovar, não liberar. Avisar o usuário. |
+| **Sorologia externa** (DB Diagnósticos), exame **sem resultado**, exame **fora de Digitação** | **Nunca.** | — |
+- Um exame por vez. **Nunca** "Liberar todos".
+- Depois de liberar, confirme status 40 na saída do CLI.
+
+### 1.5 Regras de digitação
+1. Digite **exatamente** o que está no papel/foto. **Nunca invente, estime ou complete valor.**
+2. Valor ilegível ou em dúvida: **não digite**; pergunte ao usuário.
+3. Campo que não está no papel: não envie (fica como está).
+4. Rode `--dry-run` antes quando houver qualquer dúvida; depois salve e **confira a releitura** (`salvo ...; releitura ok`). Divergência na releitura = avise o usuário.
+5. Digite **todos** os exames do papel daquele atendimento. Se faltar algum no Tasy ou no papel, avise.
+6. **Hemograma + gasometria no mesmo atendimento:** HGB e HCT = o **maior** valor entre as duas tiras, o **mesmo** nos dois exames. `lote digitar` faz sozinho; nos comandos avulsos use `--hgb-hct-max`.
+7. **Hemograma, eosinófilos mínimos (automático no `hemo`):** eosinófilos ≥ 1% sempre; se leucócitos totais > 10.000, bastonetes ≥ 1% também. Os pontos saem do maior percentual (normalmente segmentados) e o total fica 100%. Não desfaça esse ajuste.
+8. **HIV teste rápido:** se TR1 = NÃO REAGENTE, TR2 = **NÃO REALIZADO** (o CLI ajusta sozinho e avisa).
+9. **Sorologias** (TOXG, TOXM, HBSAG, HCV, HBCM, HBCG, A-HBS, CMVG, CMVM, RUGE, RUME, HIV1/2 e qualquer exame com "Sorologia" no nome) vão para o **DB Diagnósticos**: **nunca** digite valor. Anexe **1 PDF por exame** com `db-anexar`. O CLI recusa digitar nelas (sem override).
+10. **Sorologia ≠ teste rápido:** `HIV` (teste rápido) ≠ `HIV1/2` (sorologia); `TRTOXO` ≠ `TOXG/TOXM`; `TRHCV` ≠ `HCV`.
+11. Sobrescrever campo já preenchido só com `--forcar` e só se o usuário pedir correção (exceção: EAS/URN1 sempre `--forcar`, ver seção 7).
+
+### 1.6 Avise sempre o usuário quando
+- não houver resultado anterior nem evolução compatível no PEP (teste rápido/tipagem ficam sem liberar);
+- valor fora da referência;
+- incoerência com o resultado anterior ou com o PEP;
+- exame não encontrado / fora de Digitação / sem resultado;
+- divergência na releitura, erro ou parada do CLI;
+- exame do papel que não existe no Tasy (ou o contrário).
+
+### 1.7 Nunca
+- Clicar **Cancelar** na tela de resultado (descarta o que não foi salvo).
+- Usar "Liberar todos" ou outro meio de liberar que não seja `liberar` / `lote liberar`.
+- Liberar sem a etapa 3 lida (regra 1.3).
+- Usar `conferir` para pendentes: `conferir` é **só** para exames já liberados (status 40).
+- Corrigir sozinho um exame já liberado: só reporte.
+
+### 1.8 Segurança
+1. Nunca mostre, repita, grave em arquivo do repositório ou faça commit de senha, CPF, token, sessão ou cookie.
+2. Nunca faça commit de dados de paciente: nomes, números de atendimento, prescrição ou amostra, saídas do CLI, arquivos de lote, `*.conferencia.json`, PDFs, payloads (`--dump-payload`), HAR.
+3. Apague HAR e extratos com dados de paciente ou cookies quando terminar.
+4. Credenciais ficam só nos arquivos protegidos (seção 9). Não leia esses arquivos para mostrar conteúdo.
+5. **Login no Tasy derruba a outra sessão aberta do usuário.** Só rode `login` se o usuário autorizou. Se a sessão caiu (seção 10), avise e peça autorização.
+
+## 2. Fluxo passo a passo
+
+### 2.1 Vários atendimentos (padrão: use o arquivo de lote)
+1. Monte o arquivo `lote.json` com os valores do papel (formato na 2.3). Os números abaixo são exemplos.
+2. Etapa 1 — colocar todos em Digitação:
+   ```bash
+   python3 zion.py lote digitacao lote.json --dry-run
+   python3 zion.py lote digitacao lote.json
+   ```
+3. Etapa 2 — digitar e salvar todos (sem histórico/PEP):
+   ```bash
+   python3 zion.py lote digitar lote.json --dry-run
+   python3 zion.py lote digitar lote.json
+   ```
+   Leia o resumo. Toda linha com `ATENÇÃO`, `DIVERGÊNCIA`, `VERIFICAR`, `ERRO` ou `não lançado` precisa ser resolvida ou avisada.
+4. Etapa 3 — conferir todos (só leitura):
+   ```bash
+   python3 zion.py lote conferir lote.json
+   ```
+   Leia, para cada exame: classe, motivo, `anterior:` e `PEP ...:`. Grava `lote.json.conferencia.json` (válido por 60 min).
+5. Se houver `PEP_A_CONFIRMAR`: leia o trecho do PEP mostrado. **Só** se o trecho confirmar o resultado, ponha a sigla em `"pep_ok"` daquele atendimento no `lote.json`. Na dúvida, não ponha.
+6. Etapa 4 — liberar:
+   ```bash
+   python3 zion.py lote liberar lote.json --dry-run
+   python3 zion.py lote liberar lote.json
+   ```
+7. Reporte ao usuário o resumo final: liberados, digitados e não liberados (com motivo), falhas.
+
+### 2.2 Um atendimento (comandos avulsos)
+```bash
+python3 zion.py listar 100001                         # ver exames e status
+python3 zion.py digitacao 100001                      # etapa 1
+python3 zion.py resultado 100001 --exame CREA=0.8 --exame UREA=30 --dry-run
+python3 zion.py resultado 100001 --exame CREA=0.8 --exame UREA=30   # etapa 2
+python3 zion.py historico 100001                      # etapa 3: LER a saída inteira
+python3 zion.py liberar 100001 --exame CREA --dry-run
+python3 zion.py liberar 100001 --exame CREA           # etapa 4: só se a etapa 3 permitir (regra 1.4)
+```
+Vários atendimentos com comandos avulsos: rode cada etapa para todos (`digitacao 100001 100002`, depois os saves, depois `historico 100001 100002`, depois os `liberar`).
+
+### 2.3 Formato do arquivo de lote (JSON; YAML se houver PyYAML)
+```json
+{"atendimentos": [
+  {"at": 100001, "exames": ["CREA=0.8", "UREA=30", "BILI.total=0.64", "BILI.direta=0.2"]},
+  {"at": 100002, "exames": ["HIV.Teste Rápido 1=NÃO REAGENTE", "VDRL=NAO REAGENTE"], "pep_ok": ["HIV"]},
+  {"at": 100003,
+   "hemo": {"rbc": "4.5", "hgb": "13.2", "hct": "40.1", "vcm": "89", "hcm": "29.3", "chcm": "32.9", "rdw": "13.1",
+            "wbc": "7.2", "neu": "60", "lym": "30", "mon": "7", "eos": "2", "bas": "1", "plt": "250", "vpm": "9.8"},
+   "gaso": {"ph": "7.38", "pco2": "41", "hb": "13.5", "hct": "41", "na": "138", "k": "4.1", "obs": "venosa"},
+   "forcar": false}
+]}
+```
+| Chave | Obrigatória | Conteúdo |
+|---|---|---|
+| `at` | sim | número do atendimento (sem repetir no arquivo) |
+| `exames` | não | lista `"SIGLA=valor"` ou `"SIGLA.campo=valor"` (mesmo formato do `resultado --exame`) |
+| `hemo` | não | **todas** as 15 chaves: rbc, hgb, hct, vcm, hcm, chcm, rdw, wbc, neu, lym, mon, eos, bas, plt, vpm |
+| `gaso` | não | qualquer de: ph, pco2, po2, hco3, be, so2, hb, hct, na, k, ica, cl, glu, lac, bil, obs |
+| `forcar` | não | `true` sobrescreve campos já preenchidos (só se o usuário pediu correção) |
+| `pep_ok` | não | siglas confirmadas no PEP. Pôr uma sigla aqui = **você atesta que leu o trecho do PEP e ele confirma o resultado.** Nunca preencha "por garantia". |
+- O arquivo de lote e o `.conferencia.json` têm dados de paciente: **nunca** faça commit (já estão no `.gitignore`). Apague quando terminar.
+
+## 3. Classes da conferência (`lote conferir`)
+| Classe | Significado | Liberável? | O que fazer |
+|---|---|---|---|
+| `DENTRO_REFERENCIA` | Hemograma/gasometria/bioquímica dentro da referência, sem resultado anterior | **Sim** | `lote liberar` libera |
+| `COERENTE` | De acordo com o resultado anterior (hemo/gaso/bioq dentro da referência; TR/tipagem igual ao anterior) | **Sim** | `lote liberar` libera |
+| `PEP_A_CONFIRMAR` | TR/tipagem sem anterior igual (inclusive NR/negativo), ou exame sem referência com trecho no PEP | **Só com `pep_ok`** | Ler o trecho do PEP. Confirma → sigla em `pep_ok`. Não confirma ou não há trecho → não liberar e avisar |
+| `FORA_REFERENCIA` | Valor fora da referência | Não | Fica digitado. Avisar com o valor e a referência |
+| `QUALITATIVO_ALTERADO` | Qualitativo alterado (REAGENTE/Positivo) | Não | Fica digitado. Avisar |
+| `INCOERENTE` | Diverge do anterior (mudança > 50%, passou a crítico, qualitativo diferente) ou o PEP diz o contrário | Não | Fica digitado. Avisar com o motivo; conferir se houve erro de digitação |
+| `SEM_REFERENCIA` | Sem referência determinável e sem trecho no PEP | Não | Fica digitado. Avisar |
+| `EXTERNO` | Sorologia do DB Diagnósticos | Nunca | Só anexar PDF (`db-anexar`) |
+| `SEM_RESULTADO` | Nada salvo no exame | Nunca | Digitar (etapa 2) ou avisar que falta no papel |
+| `FORA_DIGITACAO` | Status diferente de 30 | Nunca | Ver `listar`; colocar em Digitação se o usuário pedir |
+| `NAO_ENCONTRADO` | Sigla do arquivo não está em Digitação no atendimento | Nunca | Conferir a sigla/atendimento e avisar |
+- `pep_ok` só vale para `PEP_A_CONFIRMAR`. Não destrava `FORA_REFERENCIA`, `INCOERENTE`, `QUALITATIVO_ALTERADO`, `SEM_REFERENCIA` nem as classes "nunca".
+- Com `historico` (avulso) não há classe: aplique você a mesma tabela lendo os alertas (`AVISO: sem resultado anterior`, `mudança grande`, `passou a faixa crítica`, `AVISO: sem evolução clínica compatível`) e a referência.
+
+Listas de siglas no código (`zion.py`): `SIGLAS_TR_TIPAGEM` (+ qualquer sigla `TR*` e nomes com "teste rápido", "tipagem", "coombs", "fator rh", "grupo/tipo sanguíneo", "vdrl", "sífilis"), `SIGLAS_HEMO`, `GASO_SIGLAS`, `SIGLAS_BIOQUIMICA`, `EXAMES_EXTERNOS_BLOQUEADOS`.
+
+## 4. Referência de comandos
+Uso: `python3 zion.py [--user USUARIO] COMANDO ...` (use `python3`). Números de atendimento = `AT`. Decimal com ponto ou vírgula (prefira ponto). `-j N` = atendimentos em paralelo (padrão 4) onde existir.
+
+Legenda: **L** = só leitura · **G** = grava no Tasy · **Local** = só arquivos locais.
+
+| Comando | Tipo | Para quê |
+|---|---|---|
+| `login` | Local + sessão | valida e grava credenciais; **derruba a outra sessão do usuário** |
+| `logout` | Local | apaga credenciais e sessão locais |
+| `whoami` | Local | mostra o usuário salvo (nunca a senha) |
+| `fila` | L | pendentes por etapa, sem número de atendimento |
+| `listar AT` | L | exames de um atendimento por status |
+| `digitacao AT [AT...]` | G | leva os exames até Digitação (30) |
+| `ler AT [AT...]` | L | lê os valores salvos em Digitação |
+| `resultado AT` | G | digita e salva exames por sigla (não libera) |
+| `hemo AT` | G | digita e salva hemograma (não libera) |
+| `gaso AT` | G | digita e salva gasometria + bioquímica equivalente (não libera) |
+| `historico AT [AT...]` | L | resultados anteriores, tendência, PEP (etapa 3) |
+| `liberar AT --exame SIGLA` | G | aprova e libera um exame por vez (**não confere nada**) |
+| `conferir` | L | audita exames **já liberados (40)**: erros de digitação e críticos |
+| `lote digitacao/digitar/conferir/liberar ARQ` | G / G / L / G | as 4 etapas para vários atendimentos |
+| `db-login`, `db-logout`, `db-whoami` | Local | acesso ao portal DB Diagnósticos |
+| `db-buscar AT` | L | pedido DB × exames do Tasy |
+| `db-anexar AT` | G | anexa 1 PDF por exame de sorologia (não libera) |
+
+### `login [--user U] [--password-stdin]`
+- Só com autorização do usuário (derruba a outra sessão).
+- Senha **sempre** pelo stdin, nunca como argumento:
   ```bash
   python3 zion.py login --user "USUARIO" --password-stdin <<'SENHA'
   a_senha_aqui
   SENHA
-  # ou: printf '%s' 'a_senha_aqui' | python3 zion.py login --user "USUARIO" --password-stdin
+  python3 zion.py whoami
   ```
-- Depois de logar, a IA confere com `python3 zion.py whoami`.
-- O CLI valida no Zion e grava em `~/.config/zion-cli/credentials.json` (permissão 600). As credenciais ficam **só** nesse arquivo protegido.
-- A IA **não** repete a senha nas respostas, **não** grava a senha em arquivos do repositório nem em logs e **não** faz commit dela.
-- Continuam valendo: variáveis `ZION_USER`/`ZION_PASSWORD` (`printf '%s' "$ZION_PASSWORD" | python3 zion.py login --user "$ZION_USER" --password-stdin`) e o `python3 zion.py login` interativo no terminal.
-- Senha errada: o CLI sai com `Login falhou (HTTP 400): ...`, sem mostrar a senha e sem gravar nada.
-- Trocar de usuário: `python3 zion.py logout` e depois `login` de novo.
+- Também aceita `ZION_USER`/`ZION_PASSWORD` no ambiente, ou `login` interativo (pede usuário e senha sem eco).
+- Senha errada: `Login falhou (HTTP 400)`, nada é gravado.
+- O usuário pode mandar usuário/senha no chat; use pelo stdin e **nunca** repita a senha.
 
-> **Nota:** a senha enviada no chat fica no histórico da conversa. Recomenda-se trocá-la periodicamente.
+### `logout` / `whoami`
+- `logout`: apaga `credentials.json` e a sessão local.
+- `whoami`: mostra só o usuário salvo.
 
-
-> **Para IAs e usuários:** URL, perfil e setor padrão já estão em `.env.example`. Na **primeira vez**, rode `python3 zion.py login` — o CLI pede usuário e senha, valida e grava em `~/.config/zion-cli/credentials.json` (não precisa digitar de novo). IAs/CI: exporte `ZION_USER` e `ZION_PASSWORD`. Leia `AGENTS.md` antes de operar. Fila: `python3 zion.py fila --resumo`.
-
-
-CLI em Python para operar o módulo de Laboratório do **Zion / Philips Tasy 5.04** (web) sem navegador. Com ele você:
-
-- coloca atendimentos em **Digitação do Resultado**;
-- digita e **salva** resultados (bioquímica, campos com várias partes, listas/texto, gasometria e hemograma);
-- relê os valores depois de salvar e compara com o que foi enviado;
-- **confere** todos os exames liberados do dia (erros de digitação e resultados críticos) — só leitura.
-
-> ⚠️ `resultado`/`hemo`/`gaso` **só salvam**. Liberar é um passo separado e explícito (`liberar`), **um exame por vez**. Hemograma, gasometria e bioquímica **dentro da referência** podem ser liberados mesmo sem histórico/PEP. Testes rápidos e tipagens só com resultado anterior igual ou com `pep_ok` (a IA leu e confirmou o trecho do PEP), inclusive se forem NÃO REAGENTE/Negativo. Fora da referência, incoerente, sem confirmação ou exame externo não libera. Nunca "Liberar todos".
-
-> ⚠️ **sorologia ≠ teste rápido.** Sorologias (Toxoplasmose IgG/IgM, Anti-HCV, HBsAg, CMV, Rubéola, Sorologia HIV 1/2, etc.) vão para **laboratório externo** — o CLI **recusa** qualquer digitação nelas (nem `--forcar` libera). Testes rápidos (`TRTOXO`, `HIV`, `TRS`, `TRHCV`, …) continuam normais.
-
-## Instalação
-
-```bash
-python3 -m pip install -r requirements.txt   # só precisa de requests
-```
-
-## Primeiro uso / trocar de usuário
-
-1. `pip install -r requirements.txt`
-2. Na primeira vez (ou para trocar de conta):
-   ```bash
-   python3 zion.py login
-   ```
-   O CLI pede **usuário** e **senha** (a senha não ecoa), valida no Zion, escolhe o perfil (usa o padrão do `.env.example` ou o único disponível; se houver vários e o padrão não existir, lista e pergunta) e grava tudo em:
-   - Linux/macOS: `~/.config/zion-cli/credentials.json` (permissão `600`)
-   - Windows: `%APPDATA%\zion-cli\credentials.json`
-3. Próximos comandos reutilizam o arquivo em silêncio. Sessão em `~/.config/zion-cli/session.json`.
-4. Trocar de usuário: `python3 zion.py login` de novo (sobrescreve). Sair: `python3 zion.py logout`. Ver quem está salvo: `python3 zion.py whoami`.
-
-Precedência de usuário/senha: `--user` / `ZION_USER`+`ZION_PASSWORD` (ambiente) → arquivo salvo → prompt interativo. Se a senha salva falhar (senha trocada), o CLI pede de novo e regrava. IAs e scripts: variáveis de ambiente ou `login --user U --password-stdin` (sem prompt).
-
-## Variáveis de ambiente (opcionais; sobrescrevem o arquivo salvo)
-
-| Variável | Exemplo | Descrição |
-|---|---|---|
-| `ZION_URL` | `https://sbsj.zion-srv.com` | URL base do Zion (default no `.env.example`) |
-| `ZION_USER` | `nome.sobrenome` | Usuário do Tasy |
-| `ZION_PASSWORD` | — | Senha. Nunca é impressa; se o login ok, também é gravada no arquivo local de credenciais |
-| `ZION_PROFILE` | `HMMCC - Laboratório - Biomédico` | Nome do perfil ativado após o login |
-| `ZION_SETOR` | `HMMCC - Serv. Laboratório Análises Clínicas` | (opcional) setor, só para conferência/aviso |
-| `ZION_CONFIG_DIR` | `/tmp/zion-test` | (opcional) pasta das credenciais/sessão — útil em testes |
-
-A senha **nunca** vai para o git. Não versionar `credentials.json` nem `.env`.
-
-## Comandos
-
-Todos aceitam o número do atendimento (`AT`). Os valores podem usar ponto ou vírgula como decimal (prefira ponto no shell). Flag global: `--user NOME` (equivalente a `ZION_USER`).
-
-### `login`
-Pede usuário/senha (ou usa env), valida, grava credenciais e troca de perfil.
-```bash
-python3 zion.py login
-```
-
-### `logout`
-Apaga o arquivo de credenciais e a sessão local.
-```bash
-python3 zion.py logout
-```
-
-### `whoami`
-Mostra só o usuário salvo (nunca a senha).
-```bash
-python3 zion.py whoami
-```
-
-### `fila [--status N] [--exames] [--resumo] [--de] [--ate] [--json]`
-**Pendentes por etapa** (não é conferência), sem número de atendimento. Cada linha mostra a **hora exata da solicitação** (`DT_PRESCRICAO`, formato `dd/mm/aaaa HH:MM`, fuso America/Sao_Paulo). Ordena por essa hora. `--de` / `--ate` filtram por `DT_PRESCRICAO` (aceitam `DD/MM/AAAA` ou `DD/MM/AAAA HH:MM`). Sem essas opções: últimos 4 dias. `--json` inclui `dt_prescricao` / `dt_prescricao_iso`.
+### `fila [--status 10|20|25|26|30] [--exames] [--resumo] [--de D] [--ate D] [--json]` — L
+- Pendentes por etapa. Use quando perguntarem "o que tem na fila / quantos pendentes". Não peça número de atendimento.
+- `--resumo`: só contagens. `--exames`: lista amostras e exames. `--status 30 --exames`: o que espera digitação.
+- `--de`/`--ate`: filtram pela hora da solicitação (`DT_PRESCRICAO`), formato `DD/MM/AAAA` ou `"DD/MM/AAAA HH:MM"`. Padrão: últimos 4 dias.
 ```bash
 python3 zion.py fila --resumo
 python3 zion.py fila --status 30 --exames
-python3 zion.py fila --de "27/10/2026 08:00" --ate "27/10/2026 12:00"
-python3 zion.py fila --status 30 --json
 ```
 
-### `listar AT [--de] [--ate] [--json]`
-**Pendentes do atendimento** (não é conferência). Mostra paciente, setor, leito e os exames por fase/status, com a hora da solicitação (`DT_PRESCRICAO`) em cada amostra. `--de` / `--ate` / `--json` iguais aos da `fila`.
+### `listar AT [--de D] [--ate D] [--json]` — L
+- Paciente, setor, leito e exames por status/amostra, com a hora da solicitação.
+
+### `digitacao AT [AT ...] [--dry-run] [--desde 10|20|25|26] [--de D] [--ate D] [-j N]` — G
+- Leva os exames de status 10/20/25/26 até **30 (Digitação do Resultado)**.
+- Vários atendimentos em paralelo.
+- `--desde` só funciona com `--dry-run` (simula a partir daquele status).
+- Padrão: prescrições dos últimos 4 dias; use `--de`/`--ate` para outras datas.
+- Se o Tasy responder algo não mapeado, o CLI para: avise o usuário, não force.
 ```bash
-python3 zion.py listar 123456
-python3 zion.py listar 123456 --de "27/10/2026" --ate "27/10/2026 12:00"
+python3 zion.py digitacao 100001 100002 --dry-run
+python3 zion.py digitacao 100001 100002
 ```
 
-### `digitacao AT [AT ...] [--dry-run] [--desde STATUS] [--de] [--ate]`
-**Pendentes → Digitação** (não é conferência). Leva os exames do atendimento até **Digitação do Resultado** (status 30), passando pelas fases intermediárias (10 Pendente coleta → 20 Material Coletado → 25 Em Análise → 26 Interfaceamento → 30). Filtra por `DT_PRESCRICAO` com `--de` / `--ate` (padrão: últimos 4 dias).
-Quando o sistema responde `IE_GERAR_AMOSTRA=S`, o CLI segue a mesma sequência que o navegador faz (sem gerar amostra nova). Qualquer outra resposta não mapeada faz o CLI **parar**.
+### `ler AT [AT ...] [-j N]` — L
+- Mostra os valores salvos dos exames em Digitação. Use para conferir a digitação.
+
+### `resultado AT --exame SIGLA=valor [--exame ...] [--dry-run] [--forcar] [--com-historico] [--sem-historico] [--dump-payload ARQ]` — G
+- Digita e **salva** (não aprova, não libera).
+- `SIGLA=valor` (campo único) ou `SIGLA.campo=valor` (vários campos; o nome do campo é comparado sem acento/maiúscula, por igualdade ou "contém").
+- `--forcar`: sobrescreve campo já preenchido. `--dry-run`: não grava.
+- `--com-historico`: compara com histórico/PEP depois de salvar (lento; não use na etapa 2). `--sem-historico`: aceito, não faz nada (já é o padrão).
+- `--dump-payload ARQ`: grava o payload (tem dado de paciente; não versionar).
+- Recusa sorologia externa (sem override).
 ```bash
-python3 zion.py digitacao 123456 --dry-run
-python3 zion.py digitacao 123456
-python3 zion.py digitacao 123456 --de "27/10/2026 08:00" --ate "27/10/2026 12:00" --dry-run
+python3 zion.py resultado 100001 --exame UREA=30 --exame CREA=0.43 --exame TGO=53.5 \
+  --exame BILI.total=0.73 --exame BILI.direta=0.21 --dry-run
+python3 zion.py resultado 100001 --exame GP-TIP.abo=B --exame GP-TIP.rh=Positivo --exame COOD=Negativo
 ```
+Regras por exame (o CLI já aplica):
+- **CREA:** se o layout tiver idade e o paciente tiver > 12 anos, preenche idade e eTFG (MDRD 186). `CREA.idade=`/`CREA.etfg=` só para sobrescrever.
+- **UREA:** só a parte inteira, truncada (30,56 → 30).
+- **BILI:** sem `BILI.indireta`, o CLI calcula total − direta; aceite o valor recalculado pelo sistema.
+- **PCR:** como sai no aparelho.
+- **Listas/texto** (tipagem, Coombs, aspecto, cor): o valor tem que existir na lista; se o CLI recusar, mostre as opções ao usuário.
+- **HIV:** TR1 NÃO REAGENTE → TR2 = NÃO REALIZADO (automático).
+- **TRTOXO:** `TRTOXO=NÃO REAGENTE` (ou `NR`/`NEG`) preenche IgG e IgM; se diferentes, `TRTOXO.IgG=` e `TRTOXO.IgM=`.
+- **EAS/URN1:** ver seção 7.
 
-### `ler AT [AT ...]`
-Lê os valores salvos de todos os exames em Digitação.
+### `hemo AT --rbc --hgb --hct --vcm --hcm --chcm --rdw --wbc --neu --lym --mon --eos --bas --plt --vpm [--dry-run] [--forcar] [--hgb-hct-max] [--com-historico] [--sem-historico] [--dump-payload ARQ]` — G
+- Hemograma completo. **As 15 opções são obrigatórias**, valores como no impresso.
+- `--wbc` em 10³/µL (14.06); `--plt` em 10⁹/L (174 → 174.000); diferencial em %: `--neu` = segmentados.
+- Percentuais arredondados fechando 100; regra de eosinófilos/bastonetes mínimos (1.5 item 7) automática.
+- `--hgb-hct-max`: se a gasometria do atendimento já estiver salva, grava o maior HGB/HCT nos dois (só regrava exame em status 30; nunca liberado). Sem a flag, o CLI só avisa a divergência.
 ```bash
-python3 zion.py ler 123456
-```
-
-## Conferir ≠ Pendentes
-
-| Pedido do usuário | Comando | O que faz |
-|---|---|---|
-| "conferir / verificar resultados críticos / erros nas liberações / o que foi liberado" | `python3 zion.py conferir` | Só leitura dos exames **já liberados (status 40)**. Não digita, não salva, não altera. |
-| "o que falta digitar / pendentes / fila / o que tem pra fazer" | `python3 zion.py fila` (ou `listar AT` / `digitacao AT`) | Lista ou move exames **ainda não liberados**. |
-
-**Não misture.** `conferir` ignora qualquer exame da mesma prescrição que ainda não esteja em status 40 (ex.: HCV/HBsAg em Digitação). Quem confere **não digita nem altera nada**.
-
-### `conferir [--de DD/MM/AAAA[ HH:MM]] [--ate ...] [--at AT] [--json] [--sem-historico] [--dias N]`
-**Só leitura.** Lista absolutamente todos os exames com status **Exame Liberado** (40) no período (padrão: hoje 00:00 → agora). O período e a hora mostrada em cada linha usam **`DT_PRESCRICAO`** (hora da solicitação, `dd/mm/aaaa HH:MM`, America/Sao_Paulo); `--json` inclui `dt_prescricao` / `dt_prescricao_iso` e `campo_hora`. Abre cada prescrição, lê **somente** os campos dos exames em status 40 (ignora pendentes da mesma presc) e classifica achados em:
-
-- **Possível erro de digitação** — escala ×10/×100/×1000, pares de sedimento EAS inconsistentes, leucograma ≠ 100%, Ht/Hb/CHCM/VCM incoerentes, BD > BT, pH sanguíneo fora de 6,8–7,8, campo principal zerado, conclusão vs valor (Beta HCG), eTFG vazia com creatinina e idade > 12, heurística “> 10× referência”.
-- **Resultado crítico** — valores de pânico (Hb < 7; PLT < 50 mil ou > 1 milhão; leucócitos totais < 2 mil ou > 30 mil; K < 2,8 ou > 6,2; Na < 120 ou > 160; iCa < 0,8 ou > 1,6; glicose < 50 ou > 400; creatinina > 5 adulto; BT > 15 em RN; pH < 7,20 ou > 7,60; pCO₂ < 20 ou > 70; lactato > 4; RNI > 4; sorologias reagentes).
-
-Limites ficam em tabelas editáveis no código (`PLAUS_BOUNDS`, `CRITICO_BOUNDS`). **Nunca** salva, aprova nem libera. Informe no relatório os totais de prescrições/exames/campos conferidos.
-```bash
-python3 zion.py conferir
-python3 zion.py conferir --de "27/10/2026" --ate "27/10/2026 23:59"
-python3 zion.py conferir --de "27/10/2026 08:00" --ate "27/10/2026 12:00"
-python3 zion.py conferir --at 123456
-python3 zion.py conferir --json
-```
-
-### `resultado AT --exame SIGLA=valor [...] [--dry-run] [--forcar] [--com-historico] [--dump-payload ARQ]`
-Digita exames por sigla (a sigla do exame no Tasy: `NA+`, `K+`, `CREA`, `UREA`, `TGO`, `TGP`, `PCRP`, `FAL`, `P+`, `MG+`, `CA+`, `DTRIG`, `AURS`, `LDH`...). Só salva. Por padrão **não** compara com o histórico/PEP (isso é a etapa 3: `historico` / `lote conferir`). `--com-historico` liga a comparação neste comando; `--sem-historico` é aceito e não faz nada.
-
-- **Campo único:** `--exame CREA=0.51`
-- **Campos DV** (ex.: TGO, TGP, AURS): mesmo formato, o CLI cuida do envio como texto. A tela do Tasy mostra com ponto (5.01), é só exibição.
-- **Exames com vários campos:** `SIGLA.campo=valor`. O nome do campo é comparado de forma flexível (sem acento/maiúsculas, por igualdade ou "contém"):
-  ```bash
-  --exame BILI.total=0.73 --exame BILI.direta=0.21
-  ```
-  Se `BILI.indireta` não for informada, o CLI calcula total − direta. O próprio Zion recalcula a indireta; aceite o valor do sistema.
-- **CREA / eTFG:** se o layout tiver campo de idade e o paciente tiver > 12 anos, o CLI preenche a idade (pela data de nascimento) e a eTFG (MDRD) sozinho. Use `CREA.idade=` / `CREA.etfg=` só para sobrescrever.
-- **Listas/texto** (tipagem, Coombs): o valor precisa existir na lista do sistema; se não existir, o CLI recusa e mostra as opções válidas.
-  ```bash
-  python3 zion.py resultado 123456 --exame GP-TIP.abo=B --exame GP-TIP.rh=Positivo --exame COOD=Negativo
-  ```
-- **EAS / URN1 (urina rotina):** ver seção detalhada em `AGENTS.md`. Resumo: sedimento em pares (papel `13.000/mL` → simples `13` + x1000 `13000`); o CLI corrige se você mandar `13000` no simples. Cruzes (`++`, `2+`) casam por texto exato. Sempre `--forcar`. Exemplo:
-  ```bash
-  python3 zion.py resultado 123456 --forcar --exame URN1.Hemoglobina=++ \
-    --exame URN1.celulas=13000 --exame URN1.leucocitos_ml=2000 --exame URN1.hemacias=21000
-  ```
-- **Sorologias / exames externos (BLOQUEADO):** qualquer exame cujo nome contenha "Sorologia" (ignora maiúsculas/acentos) ou cuja sigla esteja em `EXAMES_EXTERNOS_BLOQUEADOS` (`TOXG`, `TOXM`, `HBSAG`, `HCV`, `HBCM`, `HBCG`, `A-HBS`, `CMVG`, `CMVM`, `RUGE`, `RUME`, `HIV1/2`, …) é **recusado**. Sem override. **sorologia ≠ teste rápido.**
-- **Teste Rápido HIV (`HIV`):** o Teste Rápido 2 só se realiza se o Teste Rápido 1 for **REAGENTE**. Se TR1 = **NÃO REAGENTE**, o CLI grava TR2 = **NÃO REALIZADO** (mesmo que mandem NR) e avisa; se TR2 for omitido, também preenche NÃO REALIZADO.
-- **Teste Rápido Toxo (`TRTOXO`):** o campo principal *Teste Rápido Toxo IgG/IgM* tem **opções vazias** no cadastro do Tasy. Os valores ficam nos subcampos **Anticorpos IgG** e **Anticorpos IgM** (`REAGENTE` / `NÃO REAGENTE`). `TRTOXO=NÃO REAGENTE` (ou `NR`/`NEG`) propaga para IgG **e** IgM. Se forem diferentes:
-  ```bash
-  python3 zion.py resultado 123456 --exame TRTOXO.IgG=NÃO REAGENTE --exame TRTOXO.IgM=REAGENTE --dry-run
-  ```
-  Não confundir com sorologia `TOXG`/`TOXM` (bloqueadas).
-- `--forcar`: sobrescreve campos que já têm valor (sem ele, campos preenchidos são preservados).
-- `--dry-run`: mostra o que seria enviado, sem salvar.
-- `--dump-payload ARQ`: grava o payload do save (útil para depuração; **não versionar**, contém dados de paciente).
-
-Exemplo completo:
-```bash
-python3 zion.py resultado 123456 --exame UREA=30 --exame CREA=0.43 --exame TGO=53.5 \
-  --exame TGP=59.2 --exame BILI.total=0.73 --exame BILI.direta=0.21 --exame PCRP=14.3 --dry-run
-```
-
-### `gaso AT [--ph --pco2 --po2 --hco3 --be --so2 --hb --hct --na --k --ica --cl --glu --lac --bil] [--obs TEXTO] [--dry-run] [--forcar] [--hgb-hct-max] [--com-historico]`
-Digita e salva a **gasometria** (venosa/arterial: GASV, GASA, GASO...) e, junto, a **bioquímica equivalente** que existir na prescrição, sem histórico/PEP (mesmas flags `--com-historico` / `--sem-historico` do `resultado`):
-
-| Opção | Bioquímica equivalente |
-|---|---|
-| `--na` | NA+ |
-| `--k` | K+ |
-| `--ica` | CAI / CAIO |
-| `--cl` | CL |
-| `--glu` | GLI / GLIC / GLICO |
-| `--lac` | LAC / LACT / LACTATO |
-
-Só preenche exames que existem na prescrição. Campos não informados (ex.: Hct com "Instabilidade") ficam em branco.
-```bash
-python3 zion.py gaso 123456 --ph 7.458 --pco2 36.9 --po2 52.4 --hco3 26.4 --be 2.3 --so2 88.5 \
-  --na 136.1 --k 5.13 --ica 1.14 --cl 97.2 --glu 171 --lac 2.5 --dry-run
-```
-
-### `hemo AT --rbc --hgb --hct --vcm --hcm --chcm --rdw --wbc --neu --lym --mon --eos --bas --plt --vpm [--dry-run] [--forcar] [--hgb-hct-max] [--com-historico]`
-Digita e salva o **Hemograma Completo** com os valores **exatamente como no impresso do analisador**, sem histórico/PEP (mesmas flags `--com-historico` / `--sem-historico` do `resultado`):
-
-**Regra obrigatória do hemograma (automática no `hemo`):** Eosinófilos ≥ 1% sempre; se Leucócitos Totais > 10.000, também Bastonetes ≥ 1%. Os pontos acrescentados saem do maior percentual (normalmente segmentados) e o Total porcentagem Leucograma fica em 100. O CLI imprime o ajuste feito. Esta regra **não muda**.
-
-**HGB/HCT quando o mesmo atendimento tem hemograma e gasometria:** lançar o **maior** valor entre a tira do HC e a da gasometria, e o **mesmo número nos dois exames**. `lote digitar` unifica sozinho (max de `hgb`/`hb` e de `hct`/`ht`) antes de salvar. Nos comandos avulsos `hemo` e `gaso`, se o outro exame já estiver salvo e o valor divergir, o CLI avisa qual é o maior. `--hgb-hct-max` relê o outro exame e grava o maior nos dois; para corrigir um exame já salvo, só regrava se ele estiver em status 30, **nunca** se estiver liberado.
-
-- `--wbc` em 10³/µL (ex.: 14.06). Leucócitos Totais = WBC × 1000; os absolutos o sistema calcula.
-- `--plt` em 10⁹/L (ex.: 174). O servidor multiplica por 1000 (→ 174.000).
-- `--neu --lym --mon --eos --bas` em %: arredondados meio-para-cima; se a soma passar de 100, o basófilo é reduzido primeiro, fechando 100.
-```bash
-python3 zion.py hemo 123456 --rbc 4.04 --hgb 13.3 --hct 36 --vcm 89.1 --hcm 32.8 --chcm 36.9 --rdw 12.6 \
+python3 zion.py hemo 100001 --rbc 4.04 --hgb 13.3 --hct 36 --vcm 89.1 --hcm 32.8 --chcm 36.9 --rdw 12.6 \
   --wbc 14.06 --neu 82.1 --lym 11.9 --mon 5.6 --eos 0.3 --bas 0.1 --plt 174 --vpm 11.7 --dry-run
 ```
 
-### `liberar AT --exame SIGLA [--exame SIGLA ...] [--dry-run]`
-Aprova e libera **um exame por vez**, com as mesmas chamadas da tela (botão direito no exame > *Aprovar exame* > Ok; botão direito > *Liberar exame* > Ok). Nunca usa *Liberar todos*.
-
-**Regra:** **hemograma (HC), gasometria e bioquímica** dentro da referência podem ser liberados mesmo sem resultado anterior ou trecho no PEP (`historico AT`); se estiverem fora da referência ou incoerentes (variação grande vs o anterior, ou o PEP dizendo o contrário), ficam só digitados (status 30) e o usuário é avisado. **Testes rápidos e tipagens** (HIV, VDRL, TRS/sífilis, TRTOXO, TRHBS, TRHCV e outros TR, GP-TIP/tipagem/fator Rh, COOI/Coombs) só liberam com resultado anterior **igual** ou com confirmação no PEP. Isso vale mesmo para NÃO REAGENTE/Negativo. Sem confirmação, a conferência em lote classifica como `PEP_A_CONFIRMAR` e o exame só sai com `pep_ok` (a IA atesta que leu o trecho do PEP). Exame externo, sem resultado ou fora de Digitação nunca libera.
-
-- Só age em exame em **Digitação (30)** com **resultado salvo** (não vazio); outros status são ignorados.
-- **Nunca** age em sorologia/exame de laboratório externo (mesma trava de `resultado`).
-- Vários `--exame` são processados **um de cada vez** (aprovar → liberar → reler); no primeiro aviso/erro o CLI para e não segue para os próximos.
-- Sequência (CorLabF3): aprovar = `executaFunctionPadrao4313` (deve dar `S`) → `executaProcedurePadrao28570` (`IE_OPCAO_P=A`) → `executaProcedurePadrao113` → `executaConsultaPadraoAsHashMap286014` → `aprovarExame` (modo 1, `IE_EXAME_APROV=S`) → `approvedReportUpdate` → `aprovarExame` (modo 3) → `criarPDF` → status **35**; liberar = `executaProcedurePadrao28570` (`IE_OPCAO_P=L`) → `executaProcedurePadrao33275` → `updateResultLaboratorio` → status **40**. Qualquer `DS_CONSISTENCIA_P` preenchido para o fluxo.
-- Depois de liberar, relê e confirma o **status 40**. Se ficar em 35 (aprovado, não liberado), o CLI avisa: confira na tela.
+### `gaso AT [--ph --pco2 --po2 --hco3 --be --so2 --hb --hct --na --k --ica --cl --glu --lac --bil] [--obs TEXTO] [--dry-run] [--forcar] [--hgb-hct-max] [--com-historico] [--sem-historico] [--dump-payload ARQ]` — G
+- Gasometria (GASV, GASA, GASO, GAS). Informe pelo menos um campo.
+- Preenche também a bioquímica equivalente **só se o exame existir na mesma prescrição**: `--na`→NA+, `--k`→K+, `--ica`→CAI/CAIO, `--cl`→CL, `--glu`→GLI/GLIC/GLICO, `--lac`→LAC/LACT/LACTATO.
+- Campo com erro no aparelho ("Instabilidade" etc.): não envie (fica em branco).
+- `--hgb-hct-max`: igual ao `hemo`.
 ```bash
-python3 zion.py historico 123456 --exame VDRL     # validar antes
-python3 zion.py liberar 123456 --exame VDRL --dry-run
-python3 zion.py liberar 123456 --exame VDRL
+python3 zion.py gaso 100001 --ph 7.458 --pco2 36.9 --po2 52.4 --hco3 26.4 --be 2.3 --so2 88.5 \
+  --hb 13.5 --hct 41 --na 136.1 --k 5.13 --obs venosa --dry-run
 ```
 
-## Trabalho em lote (vários atendimentos, em paralelo)
-
-Siga a ordem do topo, etapa por etapa, sempre para **todos** antes da próxima. Um atendimento com erro não para os outros. A saída sai **agrupada por atendimento** (nunca intercalada) e no fim vem um resumo. Padrão: 4 em paralelo (`-j N` muda).
-
-**Vários atendimentos num comando só** (números de exemplo):
+### `historico AT [AT ...] [--exame SIGLA ...] [--dias 90] [--notas 1] [--json] [-j N]` — L
+- Etapa 3 avulsa. Para cada exame em Digitação (ou o liberado mais recente, se não houver): resultados anteriores de **todos** os atendimentos do paciente, tendência, Δ e trechos do PEP (evoluções clínicas, médicas/UTI primeiro).
+- Alertas: `mudança grande vs último` (> 50%), `passou a faixa crítica`, `AVISO: sem resultado anterior`, `AVISO: sem evolução clínica compatível`.
+- `--dias`: janela (padrão 90). `--notas`: nº de evoluções mostradas por grupo (padrão 1).
 ```bash
-python3 zion.py digitacao 100001 100002 100003          # etapa 1 (coloca em Digitação); --dry-run simula
-python3 zion.py ler 100001 100002 100003                 # leitura
-python3 zion.py historico 100001 100002 100003           # leitura: anteriores + PEP
-python3 zion.py conferir --at 100001 100002              # leitura: liberados (status 40)
+python3 zion.py historico 100001 100002
+python3 zion.py historico 100001 --exame VDRL --exame HIV --notas 3
 ```
 
-**Arquivo de lote** (JSON; YAML se tiver PyYAML). Mesmo formato do `--exame`; `hemo` e `gaso` usam as mesmas opções dos comandos (sem `--`):
-```json
-{"atendimentos": [
-  {"at": 100001, "exames": ["TGO=20.7", "BILI.total=0.64", "VDRL=nao reagente"]},
-  {"at": 100002, "exames": ["HIV.Teste Rápido 1=NÃO REAGENTE", "HIV.Teste Rápido 2=NÃO REALIZADO",
-                            "HIV.Conclusão Teste Rápido HIV=AMOSTRA NÃO REAGENTE PARA HIV"]},
-  {"at": 100003, "hemo": {"rbc": "4.5", "hgb": "13.2", "hct": "40.1", "vcm": "89", "hcm": "29.3", "chcm": "32.9",
-                          "rdw": "13.1", "wbc": "7.2", "neu": "4.1", "lym": "2.3", "mon": "0.5", "eos": "0.2",
-                          "bas": "0.1", "plt": "250", "vpm": "9.8"},
-                 "gaso": {"ph": "7.38", "pco2": "41", "obs": "venosa"}, "forcar": false}
-]}
-```
+### `liberar AT --exame SIGLA [--exame SIGLA ...] [--dry-run]` — G
+- Aprova (status 35) e libera (status 40) **um exame por vez**, como na tela (aprovar → liberar → reler). Nunca "Liberar todos".
+- ⚠️ **Não faz conferência.** Só recusa: sorologia externa, status ≠ 30, exame sem resultado. **Você** precisa ter rodado e lido a etapa 3 e aplicado a regra 1.4 antes.
+- Vários `--exame`: processados um de cada vez; no primeiro aviso/erro/consistência o CLI **para** e não segue.
+- Ficou em 35 (aprovado, não liberado): avise o usuário para conferir na tela.
 ```bash
-python3 zion.py lote digitacao lote.json [--dry-run]   # 1) todos em Digitação
-python3 zion.py lote digitar   lote.json [--dry-run]   # 2) só salva, sem histórico/PEP (resultado → hemo → gaso; HGB/HCT = maior das duas tiras se houver hemo e gaso)
-python3 zion.py lote conferir  lote.json               # 3) só leitura: classifica cada exame
-python3 zion.py lote liberar   lote.json [--dry-run]   # 4) libera só os liberáveis, UM exame por vez
+python3 zion.py liberar 100001 --exame CREA --dry-run
+python3 zion.py liberar 100001 --exame CREA
 ```
-Se o atendimento tiver `hemo` e `gaso` no arquivo, `lote digitar` calcula o maior HGB/HB e o maior HCT das duas tiras e lança o mesmo valor nos dois exames, antes de salvar. A regra mínima de eosinófilos do `hemo` não muda.
 
-`"pep_ok"` é obrigatório em `PEP_A_CONFIRMAR`: testes rápidos e tipagens **sem** resultado anterior igual (inclusive NÃO REAGENTE/Negativo) e exames sem referência determinável com trecho no PEP. Ao pôr a sigla em `"pep_ok"`, a IA atesta que leu o trecho do PEP e que ele confirma o resultado. Hemograma, gasometria e bioquímica dentro da referência liberam sem `"pep_ok"`.
-
-Classes da etapa 3 (gravadas em `lote.json.conferencia.json`, permissão 600, **tem dado de paciente: nunca commitar**):
-- `COERENTE`: de acordo com o resultado anterior (bioquímica/hemo/gaso dentro da referência, ou teste rápido/tipagem com valor anterior **igual**) → **liberado** na etapa 4.
-- `DENTRO_REFERENCIA`: **só hemograma, gasometria e bioquímica** dentro da referência, mesmo sem resultado anterior ou trecho no PEP → **liberado** na etapa 4, sem `"pep_ok"`. Testes rápidos e tipagens **não** entram nesta classe.
-- `PEP_A_CONFIRMAR`: teste rápido ou tipagem sem resultado anterior igual (vale para NÃO REAGENTE/Negativo), ou exame sem referência determinável com trecho no PEP (mostrado na saída). **Leia o trecho**; se confirmar o resultado, ponha a sigla em `"pep_ok"` daquele atendimento (a IA atesta que leu) e rode `lote liberar`. Sem `pep_ok` não libera.
-- `FORA_REFERENCIA` / `INCOERENTE` / `QUALITATIVO_ALTERADO` / `SEM_REFERENCIA`: fica só digitado; avise o usuário com o motivo. `pep_ok` não sobrescreve essas classes.
-- `EXTERNO` (sorologia DB: só PDF), `SEM_RESULTADO`, `FORA_DIGITACAO`, `NAO_ENCONTRADO`: nunca liberados.
-
-Siglas (listas em `zion.py`: `SIGLAS_TR_TIPAGEM`, `SIGLAS_HEMO`, `GASO_SIGLAS`, `SIGLAS_BIOQUIMICA`):
-- **Testes rápidos e tipagens** (exigem confirmação): `HIV`, `VDRL`, `TRS`, `TRSIF`, `TRTOXO`, `TRHBS`, `TRHCV`, qualquer outra sigla começando com `TR`, `GP-TIP`, `TIP`, `ABO`, `COOI`, `COOD`, `CI`, `CD`; também o nome contendo "teste rápido", "tipagem", "coombs", "fator rh" ou "grupo/tipo sanguíneo".
-- **Hemograma / gasometria / bioquímica** (liberam se dentro da referência): `HC`, `HB`, `HT`, `PLQ`, `PLT`, `RET`; `GASO`, `GASA`, `GASV`, `GAS`; `CREA`, `UREA`, `TGO`, `TGP`, `BILI`, `NA+`, `K+`, `GLI`, `PCR`, `TAP`, `TTPA` e as demais de `SIGLAS_BIOQUIMICA`.
-
-`lote liberar` recusa conferência com mais de 60 min (rode `lote conferir` de novo), libera em paralelo entre atendimentos mas **sequencial dentro de cada um**, usa a mesma lógica do `liberar` (para no primeiro aviso daquele atendimento) e termina com um **resumo único**: liberados, digitados e não liberados (com motivo) e falhas.
-
-**Sessão / login:** todos os comandos reaproveitam a sessão salva (`~/.config/zion-cli/session.json`); o token é renovado sozinho (refresh) e só há login quando a sessão expira de vez. Em lote, o processo principal valida a sessão uma vez antes de abrir os workers; cada worker carrega a mesma sessão salva e, se precisar renovar, faz isso sob trava de arquivo (os outros reaproveitam a renovação, ninguém loga em paralelo). Lembre: um login novo derruba a sessão aberta da pessoa no Tasy.
-
-## Histórico do paciente (só leitura) — `historico`
-
-Todo resultado digitado (normal **ou** alterado, qualquer exame) deve ser comparado com os
-resultados anteriores do paciente e com a evolução clínica **na etapa 3**, depois de digitar
-todos os atendimentos. Use `historico` ou `lote conferir`. O `conferir` (liberados, status 40)
-também compara. `resultado`, `hemo` e `gaso` **só salvam**; a comparação depois do save só
-roda com `--com-historico`.
-
-### `historico AT [AT ...] [--exame SIGLA ...] [--dias 90] [--notas 1] [--json]`
-- Só leitura: nada é salvo, aprovado ou liberado.
-- Exames atuais = os que estão em Digitação (30); se não houver, usa o liberado mais recente de cada exame.
-- Para cada campo numérico mostra: valores anteriores com data/hora de coleta e atendimento
-  (cruza **todos os atendimentos** do paciente), tendência (subindo/caindo/estável) e Δ vs último.
-- Alertas: `mudança grande vs último` (> 50%), `passou a faixa crítica (antes não era)` (tabela
-  `CRITICO_BOUNDS`) e `AVISO: sem resultado anterior`.
-- No fim imprime o **resumo**: exames sem resultado anterior, com mudança grande/crítica e sem evolução clínica compatível.
-
+### `conferir [--de D] [--ate D] [--at AT [AT ...]] [--json] [--sem-historico] [--dias 90] [-j N]` — L
+- **Só exames já liberados (status 40).** Não é a etapa 3 de pendentes. Use quando pedirem "conferir liberados / resultados críticos / erros de digitação nas liberações".
+- Padrão: hoje 00:00 até agora (pela hora da solicitação). Ignora exames da mesma prescrição que não estão em 40.
+- Aponta **possível erro de digitação** (escala ×10/×100/×1000, EAS inconsistente, leucograma ≠ 100%, Hb/Ht/CHCM/VCM incoerentes, BD > BT, pH fora de 6,8–7,8, campo zerado, eTFG vazia…) e **resultado crítico** (Hb < 7; PLT < 50 mil ou > 1 milhão; leucócitos < 2 mil ou > 30 mil; K < 2,8 ou > 6,2; Na < 120 ou > 160; glicose < 50 ou > 400; pH < 7,20 ou > 7,60; etc. — tabelas `PLAUS_BOUNDS` e `CRITICO_BOUNDS`).
+- Reporte todos os achados. Não corrija nada sozinho.
 ```bash
-python3 zion.py historico 123456                 # todos os exames do atendimento
-python3 zion.py historico 123456 --exame CREA --exame UREA --dias 30
+python3 zion.py conferir
+python3 zion.py conferir --at 100001 100002
 ```
 
-Fontes no Tasy (descobertas nos bundles da tela, sem HAR):
-- `CorLabF3/getChartRecords` — dados do gráfico **Resultados anteriores** da própria digitação
-  (até 6 prescrições por chamada; o CLI pagina para trás até a janela `--dias`).
-- `CorLabF3/ativarExameLabResultItemAsHashMap` — datas (coleta/aprovação) e status de cada prescrição.
-- `CorLabF0/loadPatientData` (Consulta de Resultados, feature 7008) — atendimento de cada prescrição.
-- Exames sem série no gráfico (ex.: gasometria) → lê os **liberados (40)** do mesmo atendimento
-  (até 3 prescrições, como o `conferir`).
-- **Notas clínicas do PEP** (feature 281, grid "Notas clínicas" = `DataSourceProvider/getDataSource`
-  na tabela `EVOLUCAO_PACIENTE`, ação `ActivateClinicalNotesAction`): o CLI lê as ~40 notas mais
-  recentes do atendimento, converte o RTF em texto localmente e, para cada grupo de exame, mostra as
-  `--notas N` notas mais recentes com trecho compatível (notas médicas/UTI primeiro): data, tipo,
-  profissional e o trecho com a palavra-chave entre `>>> <<<`. Mapas em `HIST_GRUPOS`: renal →
-  FUNÇÃO RENAL/DIURESE/diálise/IRA; hemato → sangramento/transfusão/plaquetopenia; eletrólitos →
-  reposição/diálise/hidratação; hepático; infeccioso; metabólico. Sem trecho compatível sai
-  `AVISO: sem evolução clínica compatível` e o exame entra no resumo.
+### `lote ETAPA ARQ [--dry-run] [--dias 90] [-j N]`
+| Etapa | Tipo | Faz |
+|---|---|---|
+| `digitacao` | G | `digitacao` de todos os `at` |
+| `digitar` | G | para cada `at`: `resultado` → `hemo` → `gaso`, sem histórico; unifica HGB/HCT (maior) se houver `hemo` e `gaso` |
+| `conferir` | L | classifica cada exame do arquivo (seção 3); grava `ARQ.conferencia.json` (permissão 600) |
+| `liberar` | G | exige conferência de ≤ 60 min; libera só `COERENTE`, `DENTRO_REFERENCIA` e `PEP_A_CONFIRMAR` com `pep_ok`; um exame por vez; resumo único |
+- `--dry-run` vale para `digitacao`, `digitar` e `liberar`.
+- Atendimentos rodam em paralelo; um com erro não para os outros; saída agrupada por atendimento.
+- `lote conferir`/`liberar` só olham as siglas que estão no arquivo (hemo = HC; gaso = exames de gasometria).
 
-### Depois de salvar (`resultado`, `hemo`, `gaso`)
-- O padrão é **não** comparar com o histórico/PEP depois de salvar (a etapa 2 tem que ser rápida).
-- `--com-historico` liga a comparação compacta por exame salvo (mesmos avisos de `historico`).
-  **Nunca bloqueia nem pula o save.**
-- `--sem-historico` é aceito por compatibilidade e não faz nada (o padrão já é não comparar).
-- Em `--dry-run` não há comparação (nada foi salvo). A conferência de um lote é a etapa 3
-  (`historico` / `lote conferir`), depois que todos foram digitados.
+### `db-login --cpf CPF --password-stdin [--serv-sol N] [--otp CODIGO]`, `db-logout`, `db-whoami` — Local
+- Acesso ao portal E-DB (DB Diagnósticos). Grava em `~/.config/zion-cli/db_credentials.json` (600).
+- Senha pelo stdin. Nunca repita CPF/senha. `db-whoami` mostra o CPF mascarado.
+- Se o portal pedir 2 fatores, rode de novo com `--otp`.
 
-### No `conferir`
-- Cada exame liberado ganha a mesma comparação (só os campos com histórico ou alerta) e o resumo no fim.
-- `--sem-historico` desliga; `--dias N` muda a janela (padrão 90). Em `--json` vai na chave `historico`.
+### `db-buscar AT [--chave X] [--pedido N] [--de D] [--ate D] [--json]` — L
+- Mostra o pedido do DB, o status de cada exame lá, os exames do Tasy em Digitação e anexos existentes.
 
-## Laudos do DB Diagnósticos (E-DB) → anexar no Tasy
+### `db-anexar AT [--exame SIGLA ...] [--dry-run] [--substituir] [--chave X] [--pedido N] [--de D] [--ate D] [--salvar-pdf PASTA]` — G
+- Baixa o laudo de **cada** exame e anexa **só no exame certo** (1 PDF por exame; nunca PDF combinado). **Não libera.**
+- Recusa PDF com nome de paciente diferente ou com outro exame. Exame precisa estar em status 30.
+- Exame que já tem anexo é pulado; `--substituir` troca o anexo.
+- Sempre `--dry-run` primeiro.
+```bash
+python3 zion.py db-buscar 100001
+python3 zion.py db-anexar 100001 --dry-run
+python3 zion.py db-anexar 100001 --exame TOXG
+```
 
-As sorologias (TOXG, TOXM…) são feitas pelo **DB Diagnósticos**. Nelas o CLI **não digita valores**. Ele baixa o laudo em PDF no portal E-DB e **anexa** ao exame do Tasy, pela mesma ação do menu *Anexar exame PDF* (tabela `RESULT_LABORATORIO`). **Nada é liberado.**
+## 5. Status dos exames
+| Código | Significado | Observação |
+|---|---|---|
+| 10 | Pendente coleta | `digitacao` move |
+| 20 | Material coletado | `digitacao` move |
+| 25 | Em análise | `digitacao` move |
+| 26 | Interfaceamento | `digitacao` move |
+| 30 | Digitação do resultado | único status em que se digita, anexa e libera |
+| 35 | Aprovado (não liberado) | estado intermediário do `liberar`; se ficar aqui, avisar |
+| 40 | Exame liberado | final; só `conferir` olha; não corrigir sozinho |
 
-### ⚠️ Regra: um PDF por exame
-Cada exame do Tasy recebe **só o PDF dele**:
-- o PDF do TOXG vai para o exame *Toxoplasmose IgG*;
-- o PDF do TOXM vai para o exame *Toxoplasmose IgM*.
+## 6. Variáveis de ambiente
+| Variável | Para quê |
+|---|---|
+| `ZION_URL`, `ZION_PROFILE`, `ZION_SETOR` | instalação, perfil e setor (padrões no `.env.example`) |
+| `ZION_USER`, `ZION_PASSWORD` | login não interativo (nunca imprimir) |
+| `ZION_CONFIG_DIR` | outra pasta de credenciais/sessão (testes) |
+| `ZION_TIMING=1` | no fim, imprime (stderr) tempo por serviço HTTP; sem dados de paciente |
+| `ZION_BUILD_WORKERS=N` | leituras paralelas dentro de um atendimento (padrão 4; `1` desliga) |
+| `DB_CPF`, `DB_PASSWORD` | alternativa ao `db-login --cpf/--password-stdin` |
+- `-j N` (em `digitacao`, `ler`, `historico`, `conferir`, `lote`): atendimentos em paralelo (padrão 4).
 
-**Nunca** anexe um PDF único com vários exames. O CLI pede ao portal o laudo de **um** procedimento por vez (`SeqProcedimento`) e lê o texto do PDF (`pdftotext`, pacote poppler-utils). Ele **recusa** o PDF quando:
-- o nome do paciente não é o mesmo do Tasy;
-- o PDF traz outro exame do mesmo pedido.
+## 7. EAS / Urina rotina (URN1)
+- Sempre `--forcar` (o modelo vem com valores "normais" preenchidos).
+- Sedimento: no papel "13.000/mL" = campo simples **13** e campo (x1000) **13000**. Use os aliases e o CLI grava o par certo: `URN1.celulas=13000`, `URN1.leucocitos_ml=2000`, `URN1.hemacias=21000`.
+- `URN1.Leucócitos` (sem sufixo) é a **fita** (Ausente/+/++/+++/++++).
+- Cruzes: mande o texto exato (`++`) ou `2+`/`+2`. `ausente`/`negativo`/`-` → Ausente/Negativo.
+- Listas (aspecto, cor…): aceita sem acento; se não casar, o CLI lista as opções e não grava.
+- Campo que não está no papel: não envie.
+```bash
+python3 zion.py resultado 100001 --forcar --dry-run --exame "URN1.Cor=Amarelo claro" \
+  --exame "URN1.Aspecto=ligeiramente turvo" --exame URN1.Densidade=1010 --exame URN1.pH=6 \
+  --exame URN1.Hemoglobina=++ --exame URN1.celulas=13000 --exame URN1.leucocitos_ml=2000 --exame URN1.hemacias=21000
+```
+- Confira a releitura: `Hemácias: 21 | x1000: 21000 (=21.000/mL)`.
 
-### Passo a passo
-1. **Acesso ao portal DB.** Faça uma vez; depois o CLI renova a sessão sozinho:
-   ```bash
-   printf '%s' "$DB_SENHA" | python3 zion.py db-login --cpf 00000000000 --password-stdin
-   # serviço solicitante padrão: 2517530 (troque com --serv-sol)
-   # se o portal pedir 2 fatores, o código chega por e-mail/SMS; rode de novo com --otp CODIGO
-   ```
-   O CPF e a senha ficam em `~/.config/zion-cli/db_credentials.json` (permissão 600), fora do repositório. Para apagar: `python3 zion.py db-logout`. Para conferir: `python3 zion.py db-whoami` (mostra o CPF mascarado).
-2. **Ver o que existe** (só leitura):
-   ```bash
-   python3 zion.py db-buscar 123456
-   ```
-   Lista o pedido do DB e o status de cada exame, os exames do Tasy em Digitação (status 30) com o par DB de cada um, e o anexo que já existe.
-3. **Ensaio**: baixa e confere cada PDF, mas não grava nada no Tasy:
-   ```bash
-   python3 zion.py db-anexar 123456 --dry-run [--exame TOXG] [--salvar-pdf /tmp/laudos]
-   ```
-4. **Anexar de verdade:**
-   ```bash
-   python3 zion.py db-anexar 123456            # todos os exames do DB em Digitação
-   python3 zion.py db-anexar 123456 --exame TOXM
-   ```
-   Para cada exame, o CLI faz o seguinte:
-   1. baixa só o PDF daquele exame e confere o paciente;
-   2. envia o arquivo como `SIGLA_DBpedido.pdf`;
-   3. grava o anexo no exame;
-   4. **relê** o exame: precisa haver **exatamente 1** anexo, e é o arquivo certo;
-   5. confirma que o status continua 30.
+## 8. Sessão e velocidade
+- A sessão fica salva e é renovada sozinha (refresh). Em lote, o processo principal valida a sessão uma vez antes dos workers.
+- Gravações (`digitacao`, `resultado`, `hemo`, `gaso`, `liberar`) são sequenciais dentro de um atendimento; atendimentos diferentes rodam em paralelo.
+- A etapa 2 não roda histórico/PEP (é o que deixava lento). Não acrescente `--com-historico` na etapa 2.
+- Gargalos conhecidos: `digitacao` (~20 chamadas por amostra), `liberar` (~1,4 s de PDF por exame), `historico` sem série no gráfico.
 
-   O exame que já tem anexo é **pulado**. Para trocar o anexo, use `--substituir`: o CLI faz *Desfazer exame PDF* e anexa o novo.
+## 9. Arquivos locais (nunca versionar)
+| Arquivo | Conteúdo |
+|---|---|
+| `~/.config/zion-cli/credentials.json` | usuário/senha do Tasy (600) |
+| `~/.config/zion-cli/session.json` | sessão do Tasy |
+| `~/.config/zion-cli/db_credentials.json` | CPF/senha do portal DB (600) |
+| `~/.config/zion-cli/db_session.json` | sessão do portal DB |
+| `~/.config/zion-cli/db_siglas.json` | (opcional) siglas DB → Tasy extras |
+| `lote*.json`, `*.conferencia.json`, `*.pdf`, `*.har`, `payload*.json` | dados de paciente/tokens |
+Windows: `%APPDATA%\zion-cli\`.
 
-### Opções úteis
-- **Vínculo com o pedido DB.** O CLI procura o pedido pelo número do atendimento, pelas prescrições e pelo nome do paciente, e só aceita o nome **idêntico**. Se a busca falhar, use `--chave X` ou `--pedido N`.
-- **Período.** A busca de exames no Tasy cobre, por padrão, os últimos 30 dias. Use `--de` e `--ate` para mudar.
-- **Siglas DB → Tasy.** A tabela padrão é `DB_SIGLAS` em `zion.py` (`TOXG→TOXG`, `TOXM→TOXM`, `PTUR→PTU24`; a chave é a sigla do Tasy e a lista traz as siglas do DB). Para acrescentar siglas sem mexer no código, crie `~/.config/zion-cli/db_siglas.json`, por exemplo `{"HBSAG": ["HBSAG"], "CMVG": ["CMVG"]}`.
-- **Pré-requisito.** O exame precisa estar em **Digitação (30)**. O Tasy só permite anexar com status < 35.
+## 10. Problemas comuns
+| Sintoma | Causa | O que fazer |
+|---|---|---|
+| `401` / `User context not found` / "sessão salva do Tasy foi encerrada no servidor" | outro login derrubou a sessão | **Pare.** Avise o usuário e peça autorização para `login` (derruba a sessão dele). Depois repita o comando |
+| `Login falhou (HTTP 400)` | usuário/senha errados | peça os dados de novo ao usuário |
+| `não existe neste atendimento` / `NAO_ENCONTRADO` | sigla errada ou exame não está em 30 | `listar AT`; avise |
+| `não está em Digitação` / `FORA_DIGITACAO` | status ≠ 30 | `digitacao AT` (se pedido) |
+| `já tem valor diferente salvo ... (use --forcar)` | campo já preenchido | só use `--forcar` se o usuário pediu correção |
+| `(opções: ...)` | valor não existe na lista | mostre as opções ao usuário |
+| `DIVERGÊNCIA` na releitura | o Tasy gravou outro valor | `ler AT`; avise |
+| `bloqueado` / sorologia | exame externo | `db-anexar`; nunca digitar |
+| `Conferência de N min atrás` | conferência > 60 min | `lote conferir` de novo |
+| `liberar` parou em 35 ou com consistência | aviso do Tasy | avise; não insista |
 
-## Segurança
-
-- Só `liberar` libera, **um exame por vez**. Hemograma, gasometria e bioquímica dentro da referência podem ser liberados mesmo sem histórico/PEP. Testes rápidos e tipagens só com resultado anterior igual ou `pep_ok` (PEP confirmado). Fora da referência, incoerente, sem confirmação ou exame externo não libera; os demais comandos só salvam.
-- Rode sempre `--dry-run` antes de salvar.
-- Depois de salvar, o CLI relê e compara; confira a releitura.
-- Avisos de valor fora da referência / consistência / eTFG são esperados e **não** cancelam o save.
-- Laudos DB: **um PDF por exame**, nunca um PDF combinado; o anexo não libera.
-- Não versionar `.session.json`, `db_credentials.json`, PDFs de laudo, HARs, backups ou payloads: contêm tokens e dados de pacientes.
+## 11. Erros proibidos (já aconteceram)
+1. **Liberar sem conferir** com resultados anteriores/PEP (sem rodar ou sem ler `historico`/`lote conferir`).
+2. **Liberar teste rápido ou tipagem** sem resultado anterior igual ou confirmação lida no PEP — inclusive NR/negativo.
+3. **Pôr sigla em `pep_ok` sem ter lido** o trecho do PEP que confirma.
+4. **Digitar incompleto ou bagunçado:** pular exames do papel, trocar valores entre exames/atendimentos, HGB/HCT diferentes entre hemograma e gasometria.
+5. **Inventar ou "corrigir" valor** que não está no papel; digitar valor ilegível.
+6. **Misturar etapas** (fazer um atendimento inteiro de cada vez) ou fazer etapa que o usuário não pediu (conferir/resumo quando só pediu digitação).
+7. **Rodar histórico/PEP na etapa 2** (`--com-historico`), deixando a digitação lenta.
+8. **Usar `conferir`** (liberados) achando que é a conferência de pendentes.
+9. **Digitar sorologia** ou anexar PDF combinado.
+10. **Logar sem autorização** (derruba a sessão do usuário) ou expor senha/CPF/dados de paciente.
 
 ## templates.json
+Modelos dos payloads das telas do Tasy, extraídos de capturas HAR e **sanitizados** (números de atendimento, prescrição, amostra e paciente anulados; o CLI preenche em tempo de execução). Para outra versão do Tasy pode ser preciso recapturar; apague o HAR depois (tem tokens).
 
-Contém os modelos dos payloads das telas do Tasy (códigos de ação/painel, filtros), extraídos de capturas HAR do navegador e **sanitizados**: números de atendimento, prescrição, amostra, paciente e pessoa foram anulados; o CLI preenche esses campos em tempo de execução. Para outra instalação/versão do Tasy pode ser preciso recapturar: faça o fluxo no navegador com DevTools → salvar HAR, copie o corpo das requisições `WCPanel`/`CorLabF3` correspondentes para as mesmas chaves e **apague o HAR** (ele contém tokens).
-
-## Para agentes de IA
-
-Leia [`AGENTS.md`](AGENTS.md).
-
-## Velocidade / perfil de tempo
-- Cada chamada ao Tasy leva ~0,15–0,4 s (latência do servidor); o tempo total é quase só a soma das chamadas em sequência.
-- Leituras (`ler`, `historico`, conferência do lote) abrem as telas das prescrições, fazem os `WResultEntry/build`, as séries anteriores e os dados de prescrições antigas **em paralelo** (até 4; `ZION_BUILD_WORKERS=1` desliga). Gravações (`digitacao`, `resultado`, `hemo`, `gaso`, `liberar`) continuam sequenciais, igual ao navegador.
-- `resultado`/`hemo`/`gaso` não disparam histórico/PEP depois de salvar (isso era o que mais atrasava a digitação). A conferência fica na etapa 3. No abrir/clicar/salvar, o CLI também deixa de fazer chamadas só de UI cujo retorno não era usado (obterPropriedades, árvore vazia, executeQuery de refresh); o payload gravado e a releitura via `build` permanecem iguais.
-- `ZION_TIMING=1 python3 zion.py ...` imprime no fim (stderr) as requisições HTTP somadas por serviço (contagem, média, máximo). Use para achar gargalos. Não mostra dados de paciente.
-- Gargalos conhecidos: `digitacao` (~20 chamadas por amostra e etapa, sequenciais), `liberar` (`generatePdfService` ~1,4 s por exame) e `historico` sem série no gráfico (abre prescrições liberadas antigas).
-- PEP x teste qualitativo: a tipagem escrita na nota ("TS O POSITIVO", "Rh negativo") é ignorada ao procurar POSITIVO/NEGATIVO de teste rápido, e "NR" isolado conta como não reagente. Campos ABO/Rh não entram nessa checagem de polaridade.
+## Licença
+Ver `LICENSE`.

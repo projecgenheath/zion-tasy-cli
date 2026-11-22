@@ -5381,7 +5381,17 @@ def cmd_lote(z, a):
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="zion.py")
+    ap = argparse.ArgumentParser(
+        prog="zion.py", formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Laboratório Zion/Tasy sem navegador. IAs: leiam AGENTS.md (regras obrigatórias) antes de usar.",
+        epilog=("Ordem obrigatória, sempre para TODOS os atendimentos antes da próxima etapa:\n"
+                "  1) digitacao / lote digitacao   (só colocar em Digitação)\n"
+                "  2) resultado|hemo|gaso / lote digitar   (só salvar; sem histórico/PEP)\n"
+                "  3) historico / lote conferir   (LER anteriores e PEP)\n"
+                "  4) liberar / lote liberar   (um exame por vez, só os coerentes)\n"
+                "NUNCA liberar sem ter rodado e lido a etapa 3. `liberar` avulso NÃO confere nada.\n"
+                "TR/tipagem/Coombs: só com resultado anterior igual ou PEP confirmado. Hemo/gaso/bioquímica: só dentro da referência.\n"
+                "Faça só a etapa que o usuário pediu. Login derruba a outra sessão do usuário: só com autorização."))
     ap.add_argument("--user", dest="cli_user", default=None,
                     help="usuário do Zion (senão ZION_USER / arquivo salvo / prompt)")
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -5410,7 +5420,7 @@ def main():
     d.add_argument("--ate", help="fim DT_PRESCRICAO DD/MM/AAAA[ HH:MM]")
     le = sp.add_parser("ler", help="lê o que está em Digitação; aceita vários atendimentos (paralelo)")
     le.add_argument("atendimento", type=int, nargs="+"); le.add_argument("-j", "--workers", type=int, default=LOTE_WORKERS, help="atendimentos em paralelo (padrão 4)")
-    lb = sp.add_parser("liberar", help="aprova e libera UM exame por vez (só status 30 com resultado salvo; nunca sorologia externa; nunca Liberar todos)")
+    lb = sp.add_parser("liberar", help="aprova e libera UM exame por vez. NÃO confere histórico/PEP/referência: só use depois de rodar e LER `historico`/`lote conferir` (prefira `lote liberar`)")
     lb.add_argument("atendimento", type=int)
     lb.add_argument("--exame", action="append", required=True, help="SIGLA do exame; repita para vários (liberados um de cada vez)")
     lb.add_argument("--dry-run", action="store_true", help="só mostra o que faria, sem enviar nada")
